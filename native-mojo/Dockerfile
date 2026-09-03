@@ -36,7 +36,10 @@ WORKDIR /build
 COPY src/ ./src/
 
 # No link flags: libzmq is dlopen'd at runtime (src/zmq.mojo).
-RUN mojo build src/main.mojo -o /build/mojoudfclient \
+# ENTRY selects the entry module: main.mojo (default) or diag.mojo (a diagnostic
+# build that reports Exasol's actual input encoding via the MT_CLOSE error).
+ARG ENTRY=main.mojo
+RUN mojo build "src/${ENTRY}" -o /build/mojoudfclient \
     && test -x /build/mojoudfclient
 
 # Fail early if any NEEDED lib is unresolved *here* (where the Mojo runtime lives).
