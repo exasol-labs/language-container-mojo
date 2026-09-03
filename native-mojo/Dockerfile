@@ -75,7 +75,11 @@ RUN set -eu; \
     if [ -n "$LOADER" ] && [ ! -e "/slc$LOADER" ]; then \
         mkdir -p "/slc$(dirname "$LOADER")"; cp -L "$LOADER" "/slc$LOADER"; \
     fi; \
-    mkdir -p /slc/tmp /slc/etc/ld.so.conf.d; chmod 1777 /slc/tmp; \
+    # nschroot bind-mounts the rootfs read-only before it prepares these mount
+    # points. They must therefore already exist in the packaged SLC.
+    mkdir -p /slc/tmp /slc/var/tmp /slc/buckets /slc/dev/pts /slc/dev/shm \
+        /slc/proc /slc/sys /slc/run/secrets /slc/etc/ld.so.conf.d; \
+    chmod 1777 /slc/tmp /slc/var/tmp; \
     printf 'passwd: files\ngroup: files\nhosts: files dns\n' > /slc/etc/nsswitch.conf; \
     printf 'include /etc/ld.so.conf.d/*.conf\n' > /slc/etc/ld.so.conf; \
     # Register EVERY staged lib directory in the loader cache, so libs resolve via

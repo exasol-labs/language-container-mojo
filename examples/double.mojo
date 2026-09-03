@@ -1,6 +1,6 @@
 # examples/double.mojo — scalar RETURNS UDF: double a BIGINT.
 #
-# SQL:  CREATE ... MOJO SCALAR SCRIPT myschema.double(val BIGINT) RETURNS BIGINT ...
+# SQL:  CREATE ... MOJO SCALAR SCRIPT myschema."DOUBLE"(val BIGINT) RETURNS BIGINT ...
 # Script name DOUBLE  ->  exported entry symbol  __exa_udf_entry_DOUBLE
 #
 # Design sketch; approximate Mojo syntax.

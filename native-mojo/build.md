@@ -38,9 +38,11 @@ the exact message/field that diverged.
 
 Use the provided [`Dockerfile`](Dockerfile) — it builds `mojoudfclient` on Debian
 trixie (matching Exasol's glibc), then stages a hermetic rootfs containing the
-binary at `/exaudf/mojoudfclient`, its dynamic loader, and its **full `ldd`
-shared-object closure** (libzmq + the Mojo runtime libs), runs a chroot
-self-test, and emits the SLC tarball:
+binary at `/exaudf/mojoudfclient`, its dynamic loader, its **full `ldd`
+shared-object closure** (libzmq + the Mojo runtime libs), and the mount points
+required by Nano's read-only `nschroot` sandbox (`/tmp`, `/var/tmp`, `/buckets`,
+`/dev`, `/proc`, `/sys`, and `/run/secrets`). It runs a chroot self-test and
+emits the SLC tarball:
 
 ```bash
 docker build -f Dockerfile --target artifact --output type=local,dest=./out .
@@ -76,7 +78,8 @@ ALTER SESSION SET SCRIPT_LANGUAGES=
 ## 5. Create the script and run it
 
 ```sql
-CREATE OR REPLACE MOJO SCALAR SCRIPT myschema.double(val BIGINT)
+-- DOUBLE is an Exasol type keyword, so quote the baked-in script name.
+CREATE OR REPLACE MOJO SCALAR SCRIPT myschema."DOUBLE"(val BIGINT)
 RETURNS BIGINT AS
 -- no %udf_object: the function is baked into the container binary,
 -- selected by the script name DOUBLE.
@@ -84,7 +87,7 @@ this is the script body; the native container ignores it beyond the name;
 /
 ```
 ```sql
-SELECT myschema.double(21);   -- 42
+SELECT myschema."DOUBLE"(21);   -- 42
 ```
 
 > The body is required syntactically but unused (the native container dispatches
