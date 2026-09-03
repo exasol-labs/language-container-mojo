@@ -192,3 +192,153 @@ mojo-exasol-udf build          # mojo build --emit shared-lib + emit entry symbo
 exapump bfs upload target/libdouble.so /buckets/bfsdefault/default/udf/libdouble.so
 # then run sql/register.sql
 ```
+
+## Run the native Mojo SLC with Exasol Nano and Podman
+
+> **Experimental:** the native SLC builds and passes its Linux ARM64 protocol
+> self-test, but a complete Nano UDF invocation is not yet verified. See
+> [Current limitations](#current-limitations) before relying on this for a
+> workload.
+
+This section uses the native container in [`native-mojo/`](native-mojo/), not
+ the `.so` SDK design described above. It builds a Linux AArch64 executable when
+run on an ARM64 host, such as Apple Silicon with Podman's Linux VM.
+
+### 1. Build and unpack the SLC
+
+From the repository root, build the package for the host architecture. The
+`selftest` target runs the full ZMQ/protobuf conversation with the bundled fake
+Exasol server and must finish with `OK: doubling verified`.
+
+```bash
+podman build --arch arm64 \
+  -f native-mojo/Dockerfile \
+  --target selftest \
+  -t mojo-slc:selftest \
+  native-mojo
+```
+
+Build the package stage, copy the tarball out of the local image, and unpack it:
+
+```bash
+podman build --arch arm64 \
+  -f native-mojo/Dockerfile \
+  --target staging \
+  -t mojo-slc:staging \
+  native-mojo
+
+container_id="$(podman create mojo-slc:staging)"
+podman cp "$container_id:/mojo-slc.tar.gz" ./mojo-slc.tar.gz
+podman rm "$container_id"
+
+mkdir -p mojo-rootfs
+tar -xzf mojo-slc.tar.gz -C mojo-rootfs
+file mojo-rootfs/exaudf/mojoudfclient
+```
+
+The final command should identify an ARM64 Linux ELF executable on an ARM64
+host. The generated rootfs includes the dynamic loader, the shared-library
+closure, and the empty mount points Nano's read-only `nschroot` setup requires.
+
+### 2. Start Nano with the SLC
+
+Nano discovers the language metadata below `/exa/slc`, while it launches UDFs
+in `/exa/sandbox`. Mount the same unpacked rootfs at **both** paths. Persist
+Nano's database files separately in `nano-exa`.
+
+For a fresh Nano data directory, pass `builtinScriptLanguageName=slc/mojo` at
+initialization. The setting is persisted in `nano-exa/exasol.conf`; omit the
+`init params=...` suffix on later starts. `--security-opt unmask=ALL` is the
+required Podman option for SLC/UDF execution.
+
+```bash
+mkdir -p nano-exa
+
+podman run --rm -it --name exanano-mojo \
+  --security-opt unmask=ALL \
+  --shm-size=512mb \
+  --pids-limit=-1 \
+  -p 127.0.0.1:8563:8563 \
+  -v "$PWD/nano-exa:/exa" \
+  -v "$PWD/mojo-rootfs:/exa/slc/mojo:ro" \
+  -v "$PWD/mojo-rootfs:/exa/sandbox:ro" \
+  docker.io/exasol/nano:latest \
+  init params='builtinScriptLanguageName=slc/mojo'
+```
+
+Wait for `Database is now up and running!`. The initial local SYS credentials
+are `sys` / `exasol` unless changed during initialization. If port 8563 is
+occupied, use another host port (for example, `18563:8563`) and use that port
+in the connection commands below.
+
+### 3. Register the SQL language alias
+
+Connect as SYS and persist the mapping:
+
+```sql
+ALTER SYSTEM SET SCRIPT_LANGUAGES = 'MOJO=builtin_mojo';
+```
+
+New sessions can now create Mojo scripts. Confirm that the script is cataloged:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS MOJO_TEST;
+OPEN SCHEMA MOJO_TEST;
+
+-- DOUBLE is an Exasol type keyword, so it must be quoted.
+CREATE OR REPLACE MOJO SCALAR SCRIPT "DOUBLE"(val BIGINT)
+RETURNS BIGINT AS
+-- The native client dispatches by SQL script name.
+/
+```
+
+### 4. Execute the baked-in example
+
+The native client contains exactly one UDF at present: `DOUBLE`, taking and
+returning `BIGINT`.
+
+```sql
+SELECT "DOUBLE"(21);       -- expected result: 42
+SELECT "DOUBLE"(-5);       -- expected result: -10
+SELECT "DOUBLE"(NULL);     -- expected result: NULL
+```
+
+For a local TLS connection using `pyexasol`:
+
+```bash
+python3 - <<'PY'
+import ssl
+import pyexasol
+
+conn = pyexasol.connect(
+    dsn='127.0.0.1:8563', user='sys', password='exasol', encryption=True,
+    websocket_sslopt={'cert_reqs': ssl.CERT_NONE},
+)
+conn.execute('OPEN SCHEMA MOJO_TEST')
+print(conn.execute('SELECT "DOUBLE"(21)').fetchall())
+conn.close()
+PY
+```
+
+### Current limitations
+
+- **Nano e2e is not green yet.** The `selftest` image verifies the full wire
+  protocol against `native-mojo/test/fake_exasol.py`. In the Nano setup above,
+  SLC discovery and `CREATE MOJO ... SCRIPT` have been verified, but executing
+  the script currently exits as `22002: VM error: Internal error: VM crashed`.
+  Treat the SQL execution example as the intended acceptance test and collect
+  `nano-exa/logs` when it fails.
+- **The UDF is hard coded.** `native-mojo/src/udf.mojo` recognizes only the
+  uppercase script name `DOUBLE` and implements only `BIGINT -> BIGINT` scalar
+  doubling. Script bodies are ignored. To add a UDF, change the compiled-in
+  dispatch and implementation, rebuild the SLC, and restart Nano with the new
+  rootfs.
+- **Only the native path is runnable here.** `examples/double.mojo`,
+  `examples/sum_positive.mojo`, and `sql/register.sql` describe the separate
+  dynamic `.so` SDK/Rust-host design; they are not loadable by the native
+  `mojoudfclient` yet.
+- **No arbitrary Mojo source compilation or dynamic loading exists.** There is
+  no `%udf_object` support in the native client and no SET/EMITS implementation.
+- **ARM64 is host-specific.** Build with `--arch arm64` only for ARM64 Nano.
+  Build a separate image/package for x86_64 Nano; do not mount an ARM64 client
+  into an x86_64 database container.

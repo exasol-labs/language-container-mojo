@@ -154,8 +154,9 @@ Rust host prefixes `F-UDF-CL-RUST-####`; use your own prefix, e.g.
 
 ## `double`, concretely
 
-Registered as `CREATE MOJO SCALAR SCRIPT myschema.double(val BIGINT) RETURNS
-BIGINT`. Handshake yields: input 1 col `PB_INT64`, output 1 col `PB_INT64`,
+Registered as `CREATE MOJO SCALAR SCRIPT myschema."DOUBLE"(val BIGINT) RETURNS
+BIGINT` (quoted because `DOUBLE` is an Exasol type keyword). Handshake yields:
+input 1 col `PB_INT64`, output 1 col `PB_INT64`,
 `input_iter_type = PB_EXACTLY_ONCE`, `single_call_mode = false`. Per input batch
 of N rows: read `data_int64[0..N]` (no nulls in the simple case), emit a table
 with `rows=N`, `data_int64=[2*x for x in input]`, `data_nulls=[false;N]`.
@@ -178,7 +179,7 @@ with `rows=N`, `data_int64=[2*x for x in input]`, `data_nulls=[false;N]`.
    ```
    (This is the same shape `scripts/lib/script_languages.sh` builds — only the
    executable name changes from `exaudfclient` to `mojoudfclient`.)
-4. `SELECT myschema.double(21);` → `42`.
+4. `SELECT myschema."DOUBLE"(21);` → `42`.
 
 ## Evolving it
 
