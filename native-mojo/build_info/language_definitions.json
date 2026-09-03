@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "languages": [
+    {
+      "aliases": ["MOJO"],
+      "protocol": "localzmq+protobuf",
+      "language_identifier": "mojo",
+      "arguments": ["lang=mojo"],
+      "udf_client_path": {
+        "executable": "/exaudf/mojoudfclient"
+      }
+    }
+  ]
+}
