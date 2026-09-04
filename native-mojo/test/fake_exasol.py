@@ -19,6 +19,7 @@ import zmq
 MT_CLIENT, MT_INFO, MT_META = 1, 2, 3
 MT_NEXT, MT_EMIT, MT_RUN, MT_DONE, MT_CLEANUP, MT_FINISHED = 6, 8, 9, 10, 11, 12
 PB_INT64 = 3
+PB_NUMERIC = 4
 CONN = 1  # connection_id the DB assigns
 
 # ---- protobuf writing -----------------------------------------------------
@@ -124,14 +125,32 @@ def emit_int64s(buf):
             return out
     return []
 
+def emit_strings(buf):
+    """Extract data_string (repeated field 2) from an MT_EMIT table, as ints."""
+    def sub(field_no, start, end):
+        for f, w, v in walk(buf, start, end):
+            if f == field_no and w == 2:
+                return v
+        return None
+    emit = sub(7, 0, len(buf))
+    table = sub(2, *emit) if emit else None
+    if table is None:
+        raise AssertionError("emit has no table")
+    out = []
+    for f, w, v in walk(buf, table[0], table[1]):
+        if f == 2 and w == 2:  # data_string element
+            s, e = v
+            out.append(int(bytes(buf[s:e]).decode()))
+    return out
+
 # ---- messages the DB sends ------------------------------------------------
 
 def m_info(script="DOUBLE"):
     info = f_string(3, script)  # exascript_info.script_name; other fields omitted
     return envelope(MT_INFO, f_len(4, info))
 
-def m_meta():
-    col = lambda name: f_string(1, name) + f_varint(2, PB_INT64)
+def m_meta(col_type=PB_INT64):
+    col = lambda name: f_string(1, name) + f_varint(2, col_type)
     meta = (f_varint(1, 1)          # input_iter_type = PB_EXACTLY_ONCE
             + f_varint(2, 1)         # output_iter_type = PB_EXACTLY_ONCE
             + f_len(3, col("val"))   # input_columns[0]
@@ -147,6 +166,14 @@ def m_next(values):
              + f_len(6, packed_i64(values)))# data_int64
     return envelope(MT_NEXT, f_len(8, f_len(2, table)))
 
+def m_next_str(values):
+    """Send the input in the data_string (NUMERIC/DECIMAL) block, as decimal text."""
+    nulls = packed_bool([False] * len(values))
+    body = f_varint(1, len(values)) + f_varint(8, len(values)) + f_len(3, nulls)
+    for v in values:                        # data_string: one repeated entry per row
+        body += f_string(2, str(v))
+    return envelope(MT_NEXT, f_len(8, f_len(2, body)))
+
 def bare(mt):
     return envelope(mt)
 
@@ -155,12 +182,13 @@ def bare(mt):
 MTN = {1: "CLIENT", 2: "INFO", 3: "META", 6: "NEXT", 8: "EMIT", 9: "RUN",
        10: "DONE", 11: "CLEANUP", 12: "FINISHED", 13: "PING"}
 
-def run(bind, values):
+def run(bind, values, numeric=False, sum_mode=False):
     ctx = zmq.Context()
     sock = ctx.socket(zmq.REP)
     sock.setsockopt(zmq.RCVTIMEO, 10000)   # 10s: fail loudly instead of hanging
     sock.bind(bind)
-    expected = [v * 2 for v in values]
+    script = "SUM_POSITIVE" if sum_mode else "DOUBLE_MOJO"
+    expected = [sum(v for v in values if v > 0)] if sum_mode else [v * 2 for v in values]
 
     def step(expect_mt):
         try:
@@ -178,31 +206,36 @@ def run(bind, values):
             sys.exit(3)
         return got
 
-    step(MT_CLIENT);   sock.send(m_info())
-    step(MT_META);     sock.send(m_meta())
+    step(MT_CLIENT);   sock.send(m_info(script))
+    step(MT_META);     sock.send(m_meta(PB_NUMERIC if numeric else PB_INT64))
     step(MT_RUN);      sock.send(bare(MT_RUN))     # open group
-    step(MT_NEXT);     sock.send(m_next(values))   # one data batch
+    step(MT_NEXT);     sock.send(m_next_str(values) if numeric else m_next(values))
     step(MT_NEXT);     sock.send(bare(MT_DONE))    # input exhausted
     emit = step(MT_EMIT); sock.send(bare(MT_EMIT)) # ack
-    got = emit_int64s(emit)
+    got = emit_strings(emit) if numeric else emit_int64s(emit)
     step(MT_DONE);     sock.send(bare(MT_DONE))
     step(MT_RUN);      sock.send(bare(MT_CLEANUP)) # no more groups
     step(MT_FINISHED); sock.send(bare(MT_FINISHED))
 
     if got == expected:
-        print("OK: doubling verified: %s -> %s" % (values, got))
+        print("OK: %s verified: %s -> %s" % (script, values, got))
         return 0
-    print("FAIL: expected %s, container emitted %s" % (expected, got), file=sys.stderr)
+    print("FAIL(%s): expected %s, container emitted %s" % (script, expected, got),
+          file=sys.stderr)
     return 1
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bind", default="tcp://127.0.0.1:6583")
     ap.add_argument("--expect-double", action="store_true")
+    ap.add_argument("--numeric", action="store_true",
+                    help="send input in the NUMERIC/DECIMAL string block")
+    ap.add_argument("--sum", action="store_true",
+                    help="drive SUM_POSITIVE (SET) instead of DOUBLE (scalar)")
     ap.add_argument("--values", default="10,21,-5,0,7")
     args = ap.parse_args()
     values = [int(x) for x in args.values.split(",")]
-    sys.exit(run(args.bind, values))
+    sys.exit(run(args.bind, values, numeric=args.numeric, sum_mode=args.sum))
 
 if __name__ == "__main__":
     main()

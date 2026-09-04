@@ -11,11 +11,11 @@ from sys.ffi import external_call
 from zmq import ZmqReq
 from wire import (
     ColumnDef, decode_response, column_i64,
-    enc_client, enc_bare, enc_ping_reply, enc_close, enc_emit_i64_single,
+    enc_client, enc_bare, enc_ping_reply, enc_close, enc_emit_i64,
     MT_INFO, MT_META, MT_RUN, MT_NEXT, MT_DONE, MT_EMIT, MT_CLEANUP,
-    MT_FINISHED, MT_PING_PONG,
+    MT_FINISHED, MT_PING_PONG, PB_INT64,
 )
-from udf import run_double, is_known
+from udf import run_udf, is_known
 
 # Terminate the process with an explicit code (a returning main() exits 0, but a
 # UDF client must signal errors non-zero). Uses libc exit — always available.
@@ -53,6 +53,7 @@ fn main() raises:
 
     var script_name = String("")
     var input_cols = List[ColumnDef]()      # from MT_META; held for the run loop
+    var output_cols = List[ColumnDef]()     # determines the emit block
     var have_meta = False
     while not have_meta:
         var resp = decode_response(sock.recv())
@@ -64,6 +65,7 @@ fn main() raises:
             sock.send(enc_bare(MT_META, conn_id))     # ask for column metadata
         elif resp.mt == MT_META:
             input_cols = resp.input_cols.copy()       # 1 col (BIGINT) for double
+            output_cols = resp.output_cols.copy()     # 1 col (BIGINT) for double
             if not is_known(script_name):
                 fail(sock, conn_id, "unknown script '" + script_name + "'")
                 return
@@ -81,29 +83,33 @@ fn main() raises:
             break                                     # session end
         # opened.mt == MT_RUN → a group is open.
 
-        # Pull this group's input batches, doubling each row, buffering output.
-        var out_vals = List[Int64]()
-        var out_nulls = List[Bool]()
+        # Collect the whole group's input (column 0), then run the UDF once.
+        # A SCALAR UDF returns one row per input row (map); a SET UDF returns one
+        # row per group (reduce) — both are just run_udf over the group's column.
+        var in_vals = List[Int64]()
+        var in_nulls = List[Bool]()
         while True:
             sock.send(enc_bare(MT_NEXT, conn_id))
             var batch = decode_response(sock.recv())
             conn_id = batch.conn_id
             if batch.mt == MT_DONE:
-                break                                 # input for this group done
+                break                                 # group boundary
             if batch.mt == MT_CLEANUP:
                 sock.send(enc_bare(MT_FINISHED, conn_id)); _ = sock.recv()
                 return
             if not batch.has_table:
                 continue
-            # Column 0 is the BIGINT input (use the handshake column meta).
-            var col = column_i64(batch.table, input_cols, 0)
-            var res = run_double(col[0], col[1])
-            for i in range(len(res[0])):
-                out_vals.append(res[0][i]); out_nulls.append(res[1][i])
+            var col = column_i64(batch.table, input_cols, 0)   # BIGINT column 0
+            for i in range(len(col[0])):
+                in_vals.append(col[0][i]); in_nulls.append(col[1][i])
 
-        # Emit the group's output as one MT_EMIT, then close the group.
-        if len(out_vals) > 0:
-            sock.send(enc_emit_i64_single(conn_id, out_vals, out_nulls))
+        var res = run_udf(script_name, in_vals, in_nulls)
+
+        # Emit the group's output as one MT_EMIT, packed into the block the
+        # output column's declared type uses (INT64 / INT32 / NUMERIC-string).
+        if len(res[0]) > 0:
+            var out_type = output_cols[0].col_type if len(output_cols) > 0 else PB_INT64
+            sock.send(enc_emit_i64(conn_id, out_type, res[0], res[1]))
             _ = sock.recv()                           # MT_EMIT ack
         sock.send(enc_bare(MT_DONE, conn_id))
         var after = decode_response(sock.recv())

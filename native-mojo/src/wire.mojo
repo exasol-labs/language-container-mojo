@@ -236,11 +236,46 @@ fn extract_close_msg(mut r: Reader, s: Int, e: Int) raises -> String:
     r.pos = sp; r.end = se
     return v
 
-# ---- reading a BIGINT column out of a decoded table -----------------------
+# ---- decimal-string <-> Int64 (NUMERIC / DECIMAL column block) ------------
+alias _B_MINUS: UInt8 = 45
+alias _B_PLUS: UInt8 = 43
+alias _B_DOT: UInt8 = 46
+alias _B_ZERO: UInt8 = 48
+alias _B_NINE: UInt8 = 57
+
+# Parse a NUMERIC/DECIMAL string into Int64 (integer part; truncates any
+# fractional digits toward zero). Handles a leading sign. Exasol packs DECIMAL
+# columns as decimal strings in `data_string`.
+fn parse_decimal_i64(s: String) raises -> Int64:
+    var b = s.as_bytes()
+    var n = len(b)
+    var i = 0
+    var neg = False
+    if n > 0 and b[0] == _B_MINUS:
+        neg = True; i = 1
+    elif n > 0 and b[0] == _B_PLUS:
+        i = 1
+    var acc: Int64 = 0
+    var any = False
+    while i < n:
+        var c = b[i]
+        if c == _B_DOT:
+            break                        # ignore fractional part
+        if c < _B_ZERO or c > _B_NINE:
+            raise Error("parse_decimal_i64: bad char in '" + s + "'")
+        acc = acc * 10 + Int64(Int(c) - 48)
+        any = True
+        i += 1
+    if not any:
+        raise Error("parse_decimal_i64: no digits in '" + s + "'")
+    return -acc if neg else acc
+
+# ---- reading an integer column out of a decoded table ---------------------
 #
 # Faithful to rowset.rs: walk rows, then columns, advancing a per-type cursor
-# only on non-null cells; collect the requested column. Requires the requested
-# column to be an INT64 column.
+# only on non-null cells; collect the requested column as Int64. The value is
+# read from whichever block the column's declared type uses — INT64, INT32, or
+# the STRING block for NUMERIC/DECIMAL (parsed from its decimal text).
 fn column_i64(td: TableData, cols: List[ColumnDef], col: Int) raises -> (List[Int64], List[Bool]):
     var values = List[Int64]()
     var nulls = List[Bool]()
@@ -254,10 +289,17 @@ fn column_i64(td: TableData, cols: List[ColumnDef], col: Int) raises -> (List[In
             if c == col:
                 if is_null:
                     values.append(0); nulls.append(True)
-                else:
-                    if blk != BLK_INT64:
-                        raise Error("column_i64: column " + String(col) + " is not INT64")
+                elif blk == BLK_INT64:
                     values.append(td.data_int64[cur[BLK_INT64]]); nulls.append(False)
+                elif blk == BLK_INT32:
+                    values.append(td.data_int32[cur[BLK_INT32]]); nulls.append(False)
+                elif blk == BLK_STRING:   # NUMERIC / DECIMAL as decimal text
+                    values.append(parse_decimal_i64(td.data_string[cur[BLK_STRING]]))
+                    nulls.append(False)
+                else:
+                    raise Error("column_i64: column " + String(col)
+                                + " type " + String(cols[c].col_type)
+                                + " is not integer-convertible")
             if not is_null:
                 cur[blk] += 1           # advance the consumed block's cursor
     return (values^, nulls^)
@@ -294,22 +336,34 @@ fn enc_close(conn_id: UInt64, message: String) -> List[UInt8]:
     write_len_field(buf, 5, close)       # request field 5: close
     return buf^
 
-# Emit one BIGINT output column (values + null flags) as MT_EMIT.
-fn enc_emit_i64_single(conn_id: UInt64, values: List[Int64], nulls: List[Bool]) -> List[UInt8]:
+# Emit one integer output column (values + null flags) as MT_EMIT, packing the
+# values into whichever block the output column's declared type uses:
+#   INT64  -> data_int64 (field 6, packed varints)
+#   INT32  -> data_int32 (field 5, packed varints)
+#   NUMERIC/DECIMAL (string block) -> data_string (field 2, decimal text, one
+#                                     repeated entry per non-null value, row order)
+# `out_type` is the output column's `column_type` enum (from the MT_META handshake).
+fn enc_emit_i64(conn_id: UInt64, out_type: Int, values: List[Int64], nulls: List[Bool]) -> List[UInt8]:
     var buf = _envelope(MT_EMIT, conn_id)
-    # exascript_table_data body
     var td = List[UInt8]()
     write_uint64(td, 1, UInt64(len(values)))     # field 1: rows (required)
     write_uint64(td, 8, 0)                        # field 8: rows_in_group (required)
-    # field 3: data_nulls (packed bool)
-    write_len_field(td, 3, packed_bools(nulls))
-    # field 6: data_int64 (packed) — only the non-null values, in row order
-    var nonnull = List[Int64]()
-    for i in range(len(values)):
-        if not nulls[i]: nonnull.append(values[i])
-    write_len_field(td, 6, packed_varints_i64(nonnull))
-    # wrap: exascript_emit_data_req field 2 = table
+    write_len_field(td, 3, packed_bools(nulls))  # field 3: data_nulls (packed)
+
+    var blk = block_of(out_type)
+    if blk == BLK_STRING:                          # NUMERIC/DECIMAL as decimal text
+        for i in range(len(values)):
+            if not nulls[i]:
+                write_string(td, 2, String(values[i]))   # field 2: data_string
+    else:
+        # INT64 (field 6) or INT32 (field 5) — packed varints of the non-null values.
+        var nonnull = List[Int64]()
+        for i in range(len(values)):
+            if not nulls[i]: nonnull.append(values[i])
+        var field = 5 if blk == BLK_INT32 else 6
+        write_len_field(td, field, packed_varints_i64(nonnull))
+
     var emit = List[UInt8]()
-    write_len_field(emit, 2, td)
+    write_len_field(emit, 2, td)                  # exascript_emit_data_req.table
     write_len_field(buf, 7, emit)                 # request field 7: emit
     return buf^
