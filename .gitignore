@@ -1,10 +1,6 @@
-# Cloned upstream checkout (has its own .git; recreate with:
-#   git clone https://github.com/exasol-labs/language-container-rs repo
-#   git -C repo apply ../mojo-bridge.patch
-/repo/
-
 # Build outputs
 native-mojo/out/
+native-mojo/diag-out/
 native-mojo/mojoudfclient
 native-mojo/**/*.tar.gz
 

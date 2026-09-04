@@ -287,8 +287,8 @@ container must read/emit the NUMERIC/string block instead of `data_int64`.
 ## Repository layout
 
 ```
-native-mojo/
-  src/udf.mojo        ← YOUR UDF (double) + script-name dispatch
+native-mojo/          the language container (everything below is Mojo, no Rust)
+  src/udf.mojo        ← the UDFs: DOUBLE_MOJO (scalar) + SUM_POSITIVE (set) + dispatch
   src/main.mojo       protocol host: argv → connect → handshake → run loop
   src/diag.mojo       diagnostic entry point (reports Exasol's wire encoding)
   src/wire.mojo       Exasol message encode/decode + exascript_table_data
@@ -297,8 +297,13 @@ native-mojo/
   Dockerfile          build binary + package hermetic SLC rootfs
   build_info/…json    SLC self-description (MOJO alias → /exaudf/mojoudfclient)
   install-native.sh   one command: build → BucketFS upload → register (Enterprise)
-  test/fake_exasol.py offline protocol oracle (the self-test)
+  build.md            build / test / package / register runbook
   DESIGN.md           architecture + the extracted Exasol wire-protocol reference
+  test/fake_exasol.py offline protocol oracle (the self-test)
+  test/diag_probe.py  offline check for the diagnostic build
+examples/
+  register.sql        activate the language + create/call DOUBLE_MOJO & SUM_POSITIVE
+  triple.mojo         worked example: adding a new native UDF
 ```
 
 ## Current limitations
@@ -319,12 +324,3 @@ native-mojo/
   loading and no JIT of the SQL script body.
 - **Architecture-specific.** Build the image for the same arch as the database
   container (ARM64 for ARM64 Nano, x86_64 otherwise).
-
-## Alternative: Rust-host bridge
-
-A separate approach — loading a Mojo-compiled `.so` through Exasol's existing
-**Rust** host (`exasol-labs/language-container-rs`) via a C-ABI bridge — lives in
-[`mojo-bridge.patch`](mojo-bridge.patch) with [`PATCH.md`](PATCH.md), plus the
-`sdk/`, `host/`, and `examples/` sketches. That path keeps the Rust host; **this
-README documents the native, Rust-free container**, which is the primary
-implementation here.

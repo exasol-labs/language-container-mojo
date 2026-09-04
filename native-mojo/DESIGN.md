@@ -2,9 +2,8 @@
 
 A container whose **host is written in Mojo**: it speaks Exasol's ZMQ + protobuf
 protocol directly and runs the UDF in the same binary. No `exaudfclient`, no
-vtable, no fingerprint, no `dlopen`, no C-accessor bridge — every Rust-bridge
-mechanism from `mojo-bridge.patch` exists only to connect a Rust host to a
-foreign `.so`, and all of it disappears here.
+vtable, no fingerprint, no `dlopen`, no C-accessor bridge — those mechanisms only
+exist to connect a Rust host to a foreign `.so`, and none of them are here.
 
 ```
 Exasol DB  <== ZMQ REQ/REP + protobuf ==>  mojoudfclient  (one Mojo binary: protocol loop + double())
