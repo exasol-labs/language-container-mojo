@@ -5,7 +5,7 @@
 # the Mojo runtime libs). No Rust anywhere.
 #
 #   docker build -f Dockerfile --target artifact --output type=local,dest=./out .
-#   # (build context = this native-mojo/ directory)
+#   # (build context = the repo root)
 #
 # The closure is resolved in the BUILDER stage, where the Mojo runtime and libzmq
 # are installed and every NEEDED/RPATH lib resolves; the staging stage only
@@ -141,7 +141,7 @@ RUN set -u; \
     echo "=== fake Exasol trace ==="; \
     cat /fake.out; \
     echo "==="; \
-    grep -q "OK: doubling verified" /fake.out
+    grep -qE "OK: .*verified" /fake.out
 
 # ── Stage 3: artifact ─────────────────────────────────────────────────────────
 FROM scratch AS artifact

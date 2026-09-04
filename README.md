@@ -17,18 +17,17 @@ protocol *is* `localzmq`). There is **no Rust anywhere**: no `exaudfclient`, no
 C-ABI vtable, no fingerprint, no `dlopen` of a compiled `.so`.
 
 > **Status — experimental.** The binary compiles (Linux ARM64/x86_64) and passes
-> the full ZMQ/protobuf **offline self-test** (`native-mojo/test/fake_exasol.py`:
+> the full ZMQ/protobuf **offline self-test** (`test/fake_exasol.py`:
 > `OK: doubling verified`). A complete *live* UDF invocation is still being
 > finalized — see [Current limitations](#current-limitations) and the
-> [diagnostic build](#diagnosing-a-live-run). The whole native implementation is
-> in [`native-mojo/`](native-mojo/); design details in
-> [`native-mojo/DESIGN.md`](native-mojo/DESIGN.md).
+> [diagnostic build](#diagnosing-a-live-run). Design details are in
+> [`DESIGN.md`](DESIGN.md).
 
 ---
 
 ## The workflow at a glance
 
-1. [Write your UDF in Mojo](#1-write-your-udf-in-mojo) — `native-mojo/src/udf.mojo`
+1. [Write your UDF in Mojo](#1-write-your-udf-in-mojo) — `src/udf.mojo`
 2. [Compile & self-test](#2-compile--self-test-no-exasol-needed) — no Exasol needed
 3. [Build the SLC package](#3-build-the-slc-package) — one `docker`/`podman build`
 4. Deploy: [**Nano** (copy the directory)](#4a-deploy-to-exasol-nano-copy-the-directory) · [**Enterprise** (BucketFS via curl)](#4b-deploy-to-exasol-enterprise-bucketfs-via-curl)
@@ -39,7 +38,7 @@ C-ABI vtable, no fingerprint, no `dlopen` of a compiled `.so`.
 
 ## 1. Write your UDF in Mojo
 
-The entire user-facing UDF lives in [`native-mojo/src/udf.mojo`](native-mojo/src/udf.mojo).
+The entire user-facing UDF lives in [`src/udf.mojo`](src/udf.mojo).
 The shipped example doubles a `BIGINT`:
 
 ```mojo
@@ -68,7 +67,7 @@ The scalar UDF is named `DOUBLE_MOJO` (not `DOUBLE`, a reserved Exasol keyword).
 
 - **Change the logic:** to make it `triple`, change `values[i] * 2` to `* 3`.
 - **Add a UDF:** implement another `run_*`, add an arm to `run_udf`, and add the
-  name to `is_known`. The run loop in [`src/main.mojo`](native-mojo/src/main.mojo)
+  name to `is_known`. The run loop in [`src/main.mojo`](src/main.mojo)
   collects a whole group and calls `run_udf` — a SCALAR UDF returns one row per
   input row (map), a SET UDF returns one row per group (reduce).
 - Everything else (`proto.mojo`, `wire.mojo`, `zmq.mojo`, `main.mojo`) is the host
@@ -80,7 +79,7 @@ The binary is built inside the container image (step 3), but you can also compil
 directly with a local Mojo toolchain:
 
 ```bash
-mojo build native-mojo/src/main.mojo -o mojoudfclient
+mojo build src/main.mojo -o mojoudfclient
 ```
 
 No linker flags: `src/zmq.mojo` `dlopen`s `libzmq.so.5` at runtime, so `mojo build`
@@ -91,7 +90,7 @@ binary through the entire ZMQ/protobuf conversation against a bundled fake Exaso
 and must print `OK: doubling verified`:
 
 ```bash
-docker build -f native-mojo/Dockerfile --target selftest --progress=plain native-mojo
+docker build -f Dockerfile --target selftest --progress=plain .
 ```
 (Use `podman build --arch arm64 …` on Apple Silicon.) It prints a per-message
 trace (`CLIENT → META → RUN → NEXT → EMIT → DONE → FINISHED`) — invaluable for
@@ -106,8 +105,8 @@ requires (`/tmp`, `/var/tmp`, `/buckets`, `/dev`, `/proc`, `/sys`, `/run/secrets
 
 ```bash
 # x86_64 host / Enterprise target
-docker build -f native-mojo/Dockerfile --target artifact \
-  --output type=local,dest=./out native-mojo
+docker build -f Dockerfile --target artifact \
+  --output type=local,dest=./out .
 #  → out/mojo-slc.tar.gz
 ```
 
@@ -115,8 +114,8 @@ On Apple Silicon for **ARM64 Nano**, build with Podman and copy the tarball out 
 the staging image, then unpack it into a rootfs directory to mount:
 
 ```bash
-podman build --arch arm64 -f native-mojo/Dockerfile --target staging \
-  -t mojo-slc:staging native-mojo
+podman build --arch arm64 -f Dockerfile --target staging \
+  -t mojo-slc:staging .
 
 cid="$(podman create mojo-slc:staging)"
 podman cp "$cid:/mojo-slc.tar.gz" ./mojo-slc.tar.gz
@@ -129,7 +128,7 @@ file mojo-rootfs/exaudf/mojoudfclient   # ARM64 Linux ELF on an ARM64 host
 > Build the image for the **same architecture as the database container**. Never
 > mount an ARM64 client into an x86_64 Exasol, or vice versa.
 
-`native-mojo/build_info/language_definitions.json` in the rootfs declares the
+`build_info/language_definitions.json` in the rootfs declares the
 `MOJO` alias and the executable path `/exaudf/mojoudfclient`.
 
 ## 4a. Deploy to Exasol Nano (copy the directory)
@@ -181,7 +180,7 @@ curl -k -X PUT -T out/mojo-slc.tar.gz \
   # 200 = present
   ```
 
-`native-mojo/install-native.sh` wraps build + this upload + registration into one
+`install-native.sh` wraps build + this upload + registration into one
 command if you'd rather not do it by hand.
 
 ## 5. Activate the language container
@@ -269,8 +268,8 @@ one input cycle and then reports exactly what Exasol sent — column types, row
 count, and which wire block the value landed in — as the SQL error message:
 
 ```bash
-docker build -f native-mojo/Dockerfile --target artifact \
-  --build-arg ENTRY=diag.mojo --output type=local,dest=./diag-out native-mojo
+docker build -f Dockerfile --target artifact \
+  --build-arg ENTRY=diag.mojo --output type=local,dest=./diag-out .
 ```
 
 Deploy `diag-out/mojo-slc.tar.gz` in place of the normal one and run the query;
@@ -286,24 +285,24 @@ container must read/emit the NUMERIC/string block instead of `data_int64`.
 
 ## Repository layout
 
+The whole repo is the language container — everything is Mojo, no Rust.
+
 ```
-native-mojo/          the language container (everything below is Mojo, no Rust)
-  src/udf.mojo        ← the UDFs: DOUBLE_MOJO (scalar) + SUM_POSITIVE (set) + dispatch
-  src/main.mojo       protocol host: argv → connect → handshake → run loop
-  src/diag.mojo       diagnostic entry point (reports Exasol's wire encoding)
-  src/wire.mojo       Exasol message encode/decode + exascript_table_data
-  src/proto.mojo      hand-rolled protobuf primitives
-  src/zmq.mojo        libzmq FFI (runtime dlopen)
-  Dockerfile          build binary + package hermetic SLC rootfs
-  build_info/…json    SLC self-description (MOJO alias → /exaudf/mojoudfclient)
-  install-native.sh   one command: build → BucketFS upload → register (Enterprise)
-  build.md            build / test / package / register runbook
-  DESIGN.md           architecture + the extracted Exasol wire-protocol reference
-  test/fake_exasol.py offline protocol oracle (the self-test)
-  test/diag_probe.py  offline check for the diagnostic build
-examples/
-  register.sql        activate the language + create/call DOUBLE_MOJO & SUM_POSITIVE
-  triple.mojo         worked example: adding a new native UDF
+src/udf.mojo          ← the UDFs: DOUBLE_MOJO (scalar) + SUM_POSITIVE (set) + dispatch
+src/main.mojo         protocol host: argv → connect → handshake → run loop
+src/diag.mojo         diagnostic entry point (reports Exasol's wire encoding)
+src/wire.mojo         Exasol message encode/decode + exascript_table_data
+src/proto.mojo        hand-rolled protobuf primitives
+src/zmq.mojo          libzmq FFI (runtime dlopen)
+Dockerfile            build binary + package hermetic SLC rootfs
+build_info/…json      SLC self-description (MOJO alias → /exaudf/mojoudfclient)
+install-native.sh     one command: build → BucketFS upload → register (Enterprise)
+build.md              build / test / package / register runbook
+DESIGN.md             architecture + the extracted Exasol wire-protocol reference
+test/fake_exasol.py   offline protocol oracle (the self-test)
+test/diag_probe.py    offline check for the diagnostic build
+examples/register.sql activate the language + create/call DOUBLE_MOJO & SUM_POSITIVE
+examples/triple.mojo  worked example: adding a new native UDF
 ```
 
 ## Current limitations

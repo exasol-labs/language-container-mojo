@@ -47,7 +47,7 @@ emits the SLC tarball:
 ```bash
 docker build -f Dockerfile --target artifact --output type=local,dest=./out .
 ```
-(Build context is this `native-mojo/` directory.) The tarball lands at
+(Build context is the repo root.) The tarball lands at
 `out/mojo-slc.tar.gz`.
 
 Two `VERIFY` spots in the Dockerfile need checking against your Mojo release: the

@@ -1,8 +1,12 @@
 # Build outputs
-native-mojo/out/
-native-mojo/diag-out/
-native-mojo/mojoudfclient
-native-mojo/**/*.tar.gz
+out/
+diag-out/
+mojoudfclient
+*.tar.gz
+
+# Nano / local run scratch
+mojo-rootfs/
+nano-exa/
 
 # Python / OS cruft
 __pycache__/

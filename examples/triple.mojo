@@ -1,6 +1,6 @@
 # examples/triple.mojo — worked example: adding a new native UDF.
 #
-# Native UDFs are plain Mojo functions in native-mojo/src/udf.mojo, dispatched by
+# Native UDFs are plain Mojo functions in src/udf.mojo, dispatched by
 # SQL script name — there is no separate .so, no vtable, no @export. Adding one is
 # three small edits to src/udf.mojo (shown below), then rebuild + redeploy the SLC.
 
@@ -24,7 +24,7 @@ fn run_triple(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool
 # ── 3. Add the name to is_known() in src/udf.mojo ───────────────────────────
 #   return name == "DOUBLE_MOJO" or name == "SUM_POSITIVE" or name == "TRIPLE_MOJO"
 #
-# Then rebuild the SLC (see ../native-mojo/build.md), redeploy, and register it:
+# Then rebuild the SLC (see ../build.md), redeploy, and register it:
 #
 #   CREATE OR REPLACE MOJO SCALAR SCRIPT TRIPLE_MOJO(val BIGINT)
 #   RETURNS BIGINT AS

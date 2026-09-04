@@ -10,7 +10,7 @@
 #      language already in SCRIPT_LANGUAGES (a stale MOJO entry is replaced).
 #
 # Requires: exapump; and docker (unless MOJO_SLC_TARBALL points at a prebuilt
-# tarball). Run from the native-mojo/ directory.
+# tarball). Run from the repo root.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
