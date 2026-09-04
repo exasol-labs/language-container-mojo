@@ -43,8 +43,8 @@ The entire user-facing UDF lives in [`native-mojo/src/udf.mojo`](native-mojo/src
 The shipped example doubles a `BIGINT`:
 
 ```mojo
-# out[i] = 2 * in[i], with NULL in → NULL out
-fn run_double(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
+# out[i] = 2 * in[i], with NULL in → NULL out  (SCALAR)
+fn run_double_mojo(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
     var out = List[Int64]()
     var out_nulls = List[Bool]()
     for i in range(len(values)):
@@ -54,13 +54,23 @@ fn run_double(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool
             out.append(values[i] * 2); out_nulls.append(False)
     return (out^, out_nulls^)
 
+# Dispatch on the SQL script name (already UPPER-cased by Exasol).
+fn run_udf(name: String, values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
+    if name == "SUM_POSITIVE":
+        return run_sum_positive(values, nulls)   # SET reduce
+    return run_double_mojo(values, nulls)        # DOUBLE_MOJO (default)
+
 fn is_known(name: String) -> Bool:
-    return name == "DOUBLE"     # SQL script-name dispatch
+    return name == "DOUBLE_MOJO" or name == "SUM_POSITIVE"
 ```
 
+The scalar UDF is named `DOUBLE_MOJO` (not `DOUBLE`, a reserved Exasol keyword).
+
 - **Change the logic:** to make it `triple`, change `values[i] * 2` to `* 3`.
-- **Add a UDF:** implement another `run_*`, extend `is_known`, and branch on the
-  SQL script name in [`src/main.mojo`](native-mojo/src/main.mojo)'s run loop.
+- **Add a UDF:** implement another `run_*`, add an arm to `run_udf`, and add the
+  name to `is_known`. The run loop in [`src/main.mojo`](native-mojo/src/main.mojo)
+  collects a whole group and calls `run_udf` — a SCALAR UDF returns one row per
+  input row (map), a SET UDF returns one row per group (reduce).
 - Everything else (`proto.mojo`, `wire.mojo`, `zmq.mojo`, `main.mojo`) is the host
   plumbing — a UDF author normally doesn't touch it.
 
@@ -208,22 +218,33 @@ the same value to test in the current session only.
 ## 6. Create the script and run it
 
 The native client dispatches on the **SQL script name** (there is no
-`%udf_object`); the script body is ignored. `DOUBLE` is an Exasol type keyword, so
-quote it:
+`%udf_object`); the script body is ignored. The container ships two baked-in
+UDFs — `DOUBLE_MOJO` (SCALAR) and `SUM_POSITIVE` (SET). The scalar one is named
+`DOUBLE_MOJO` rather than `DOUBLE` because `DOUBLE` is a reserved Exasol type
+keyword.
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS MOJO_TEST;
 OPEN SCHEMA MOJO_TEST;
 
-CREATE OR REPLACE MOJO SCALAR SCRIPT "DOUBLE"(val BIGINT)
+-- SCALAR (map): out = 2 * val
+CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO(val BIGINT)
+RETURNS BIGINT AS
+-- native client dispatches by script name; body ignored
+/
+
+-- SET (reduce): sum of positive values per group
+CREATE OR REPLACE MOJO SET SCRIPT SUM_POSITIVE(val BIGINT)
 RETURNS BIGINT AS
 -- native client dispatches by script name; body ignored
 /
 ```
 ```sql
-SELECT "DOUBLE"(21);    -- 42
-SELECT "DOUBLE"(-5);    -- -10
-SELECT "DOUBLE"(NULL);  -- NULL
+SELECT DOUBLE_MOJO(21);     -- 42
+SELECT DOUBLE_MOJO(-5);     -- -10
+SELECT DOUBLE_MOJO(NULL);   -- NULL
+
+SELECT SUM_POSITIVE(val) FROM (VALUES 10, 21, -5, 0, 7) t(val);   -- 38
 ```
 
 Via `pyexasol` over a local TLS connection:
@@ -235,14 +256,14 @@ conn = pyexasol.connect(dsn='127.0.0.1:8563', user='sys', password='exasol',
                         encryption=True,
                         websocket_sslopt={'cert_reqs': ssl.CERT_NONE})
 conn.execute('OPEN SCHEMA MOJO_TEST')
-print(conn.execute('SELECT "DOUBLE"(21)').fetchall())
+print(conn.execute('SELECT DOUBLE_MOJO(21)').fetchall())
 conn.close()
 PY
 ```
 
 ## Diagnosing a live run
 
-If a live `SELECT "DOUBLE"(21)` returns an empty set or `22002 VM crashed`, build
+If a live `SELECT DOUBLE_MOJO(21)` returns an empty set or `22002 VM crashed`, build
 the **diagnostic** entry point instead of the normal one. It runs the handshake +
 one input cycle and then reports exactly what Exasol sent — column types, row
 count, and which wire block the value landed in — as the SQL error message:
@@ -256,7 +277,7 @@ Deploy `diag-out/mojo-slc.tar.gz` in place of the normal one and run the query;
 it will fail with a line like:
 
 ```
-MOJO-DIAG script=DOUBLE in_iter=1 single=0 in_types=[..] out_types=[..] | RUN->6 rows=1 i64=1 str=0 first_i64=21
+MOJO-DIAG script=DOUBLE_MOJO in_iter=1 single=0 in_types=[..] out_types=[..] | RUN->6 rows=1 i64=1 str=0 first_i64=21
 ```
 
 `in_types`/`out_types` are `column_type` enums (`3`=INT64, `4`=NUMERIC, `7`=STRING,
@@ -282,14 +303,18 @@ native-mojo/
 
 ## Current limitations
 
-- **Live e2e is not green yet.** The self-test verifies the full wire protocol
-  offline; a live invocation currently returns an empty result / `22002` and is
-  under debugging via the [diagnostic build](#diagnosing-a-live-run).
-- **The UDF is hard-coded.** `src/udf.mojo` recognizes only the script name
-  `DOUBLE` and implements only `BIGINT → BIGINT` scalar doubling. To change/add a
-  UDF, edit the dispatch + implementation, rebuild the SLC, and redeploy.
-- **BIGINT column blocks.** Only the `data_int64` block is currently read/written;
-  DECIMAL/NUMERIC (string block), DOUBLE, and SET/EMITS are not yet implemented.
+- **Live e2e not confirmed green.** The self-test verifies the full wire protocol
+  offline (INT64 and NUMERIC/string blocks, SCALAR and SET). A prior live run
+  returned an empty result; the likely cause — Exasol delivering `BIGINT` in the
+  NUMERIC/string block — is now handled, but a live run has not yet been
+  re-confirmed. Use the [diagnostic build](#diagnosing-a-live-run) if it recurs.
+- **The UDFs are hard-coded.** `src/udf.mojo` ships `DOUBLE_MOJO` (SCALAR) and
+  `SUM_POSITIVE` (SET), both `BIGINT → BIGINT`. To change/add a UDF, edit the
+  `run_udf` dispatch + implementation, rebuild the SLC, and redeploy.
+- **Column type coverage.** Integer columns are read/written across the `data_int64`,
+  `data_int32`, and NUMERIC/DECIMAL `data_string` blocks. `DOUBLE` (floating point),
+  other types, and EMITS (multi-row output) are not yet implemented; SET input
+  (group reduce) is.
 - **No `%udf_object` / arbitrary source.** The container has no dynamic `.so`
   loading and no JIT of the SQL script body.
 - **Architecture-specific.** Build the image for the same arch as the database

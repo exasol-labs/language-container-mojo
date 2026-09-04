@@ -1,24 +1,33 @@
--- Registration SQL. Assumes a MOJO script language has been installed as an SLC
--- (the fork's scripts/install.sh equivalent), so `%udf_object` is honored and
--- the CREATE ... MOJO ... form is accepted.
+-- Registration SQL for the NATIVE Mojo language container.
+--
+-- The UDFs are baked into the container binary (mojoudfclient) and dispatched by
+-- SQL script name — there is NO %udf_object and the script body is ignored.
+-- Activate the MOJO language first (see README "Activate the language container"):
+--   Nano:       ALTER SYSTEM SET SCRIPT_LANGUAGES = 'MOJO=builtin_mojo';
+--   Enterprise: ALTER SYSTEM SET SCRIPT_LANGUAGES =
+--     '<existing> MOJO=localzmq+protobuf:///bfsdefault/default/slc/mojoslc?lang=mojo#buckets/bfsdefault/default/slc/mojoslc/exaudf/mojoudfclient';
 
--- Scalar RETURNS. Script name DOUBLE must match the exported symbol
--- __exa_udf_entry_DOUBLE (loader builds the symbol from the SQL name, verbatim,
--- UPPER_SNAKE_CASE).
--- DOUBLE is an Exasol type keyword, so quote the baked-in script name.
-CREATE OR REPLACE MOJO SCALAR SCRIPT myschema."DOUBLE"(val BIGINT)
+CREATE SCHEMA IF NOT EXISTS MOJO_TEST;
+OPEN SCHEMA MOJO_TEST;
+
+-- SCALAR (map): DOUBLE_MOJO(val) -> 2 * val, NULL -> NULL.
+-- Named DOUBLE_MOJO because DOUBLE is a reserved Exasol type keyword.
+CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO(val BIGINT)
 RETURNS BIGINT AS
-%udf_object /buckets/bfsdefault/default/udf/libdouble.so;
+-- native client dispatches by script name; body ignored
 /
 
-SELECT myschema."DOUBLE"(21);        -- -> 42
+SELECT DOUBLE_MOJO(21);     -- 42
+SELECT DOUBLE_MOJO(-5);     -- -10
+SELECT DOUBLE_MOJO(NULL);   -- NULL
 
--- SET RETURNS group aggregate. Script name SUM_POSITIVE -> __exa_udf_entry_SUM_POSITIVE
-CREATE OR REPLACE MOJO SET SCRIPT myschema.sum_positive(val BIGINT)
+-- SET (reduce): SUM_POSITIVE sums the positive values in each group into one row.
+CREATE OR REPLACE MOJO SET SCRIPT SUM_POSITIVE(val BIGINT)
 RETURNS BIGINT AS
-%udf_object /buckets/bfsdefault/default/udf/libsum_positive.so;
+-- native client dispatches by script name; body ignored
 /
 
-SELECT dept, myschema.sum_positive(amount)
-FROM   sales
-GROUP  BY dept;
+SELECT SUM_POSITIVE(val) FROM (VALUES 10, 21, -5, 0, 7) t(val);   -- 38
+
+-- Grouped example:
+-- SELECT dept, SUM_POSITIVE(amount) FROM sales GROUP BY dept;
