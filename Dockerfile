@@ -15,8 +15,10 @@
 # VERIFY: the Mojo install channel/version below against your release.
 
 # ── Stage 1: builder — compile AND assemble the /slc rootfs ───────────────────
-# Debian trixie so the bundled glibc matches Exasol's container base.
-FROM debian:trixie AS builder
+# Debian trixie so the bundled glibc matches Exasol's container base. Pinned by
+# digest for supply-chain reproducibility — bump deliberately to pick up updates
+# (multi-arch manifest digests; verify with `docker manifest inspect`).
+FROM debian:trixie@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1 AS builder
 
 # libzmq5: src/zmq.mojo dlopens libzmq.so.5 at runtime; it (and its own closure)
 # must be present here so the ldd walk can resolve and stage it. clang/lld cover
@@ -129,7 +131,7 @@ RUN set -eu; \
 
 # ── Stage 2: packager ─────────────────────────────────────────────────────────
 # A clean slim base: only packages the pre-assembled rootfs, proves it loads, tars.
-FROM debian:trixie-slim AS staging
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS staging
 
 COPY --from=builder /slc /slc
 
@@ -157,7 +159,7 @@ RUN tar --hard-dereference -C /slc -czf /mojo-slc.tar.gz .
 # MT_* exchange with test/fake_exasol.py and prints a per-message trace, so an
 # empty/None result becomes a precise "container sent X, expected Y".
 #   docker build -f Dockerfile --target selftest .
-FROM debian:trixie-slim AS selftest
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS selftest
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-zmq coreutils \
     && rm -rf /var/lib/apt/lists/*

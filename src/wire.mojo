@@ -290,10 +290,16 @@ fn column_i64(td: TableData, cols: List[ColumnDef], col: Int) raises -> (List[In
                 if is_null:
                     values.append(0); nulls.append(True)
                 elif blk == BLK_INT64:
+                    if cur[BLK_INT64] >= len(td.data_int64):
+                        raise Error("column_i64: INT64 block underrun (malformed batch)")
                     values.append(td.data_int64[cur[BLK_INT64]]); nulls.append(False)
                 elif blk == BLK_INT32:
+                    if cur[BLK_INT32] >= len(td.data_int32):
+                        raise Error("column_i64: INT32 block underrun (malformed batch)")
                     values.append(td.data_int32[cur[BLK_INT32]]); nulls.append(False)
                 elif blk == BLK_STRING:   # NUMERIC / DECIMAL as decimal text
+                    if cur[BLK_STRING] >= len(td.data_string):
+                        raise Error("column_i64: STRING block underrun (malformed batch)")
                     values.append(parse_decimal_i64(td.data_string[cur[BLK_STRING]]))
                     nulls.append(False)
                 else:

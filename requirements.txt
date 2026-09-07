@@ -1,3 +1,9 @@
 # Extra Python packages for the Mojo UDF's Python interop.
-# Add one per line (e.g. `numpy==2.1.0`), then rebuild the SLC — they are
-# pip-installed into /opt/pypkgs in the rootfs (on PYTHONPATH) at build time.
+# Add one per line, then rebuild the SLC — they are pip-installed into
+# /opt/pypkgs in the rootfs (on PYTHONPATH) at build time.
+#
+# Supply chain: pip runs package build code at install time and the result ships
+# in the container, so pin exact versions and prefer hashes, e.g.
+#   numpy==2.1.0 \
+#     --hash=sha256:<...>
+# Keep this list minimal — every package enlarges the attack surface.

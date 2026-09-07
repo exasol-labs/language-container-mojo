@@ -169,19 +169,22 @@ becomes browsable at `slc/mojoslc/`:
 
 ```bash
 HOST=my-exasol-host          # BucketFS service host
-BFS_WRITE_PW=…               # write password of the 'default' bucket
 
-curl -k -X PUT -T out/mojo-slc.tar.gz \
-  "https://w:${BFS_WRITE_PW}@${HOST}:2581/default/slc/mojoslc.tar.gz"
+# -u w  → curl prompts for the write password (keeps it out of ps/history);
+#         you upload the executable UDF binary here, so DON'T disable TLS in prod.
+curl -X PUT -T out/mojo-slc.tar.gz -u w \
+  "https://${HOST}:2581/default/slc/mojoslc.tar.gz"
 ```
 
 - `w` is the BucketFS write user; `2581` is the HTTPS BucketFS port (`2580` for
-  HTTP); `-k` accepts the self-signed cert.
+  HTTP). **Validate TLS** — this channel carries the container binary, so a MITM
+  could swap it. For a self-signed BucketFS cert use `--cacert <ca.pem>`; only add
+  `-k` (skip verification) if you accept that risk.
 - `default` is the bucket in the `bfsdefault` service. Verify the executable
   landed:
   ```bash
-  curl -k -s -o /dev/null -w '%{http_code}\n' \
-    "https://r:${BFS_READ_PW}@${HOST}:2581/default/slc/mojoslc/exaudf/mojoudfclient"
+  curl -s -u r -o /dev/null -w '%{http_code}\n' \
+    "https://${HOST}:2581/default/slc/mojoslc/exaudf/mojoudfclient"
   # 200 = present
   ```
 

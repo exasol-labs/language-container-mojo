@@ -105,6 +105,8 @@ struct Reader:
         while True:
             if self.pos >= self.end:
                 raise Error("protobuf: varint truncated")
+            if shift >= 64:                       # a 64-bit varint is <= 10 bytes
+                raise Error("protobuf: varint too long")
             var b = self.buf[self.pos]
             self.pos += 1
             result |= UInt64(b & 0x7F) << shift

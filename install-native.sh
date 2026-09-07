@@ -19,14 +19,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST=""
 PORT=8563
 USER=sys
-PASSWORD=""
+PASSWORD="${EXASOL_PASSWORD:-}"       # prefer env over a CLI flag (see below)
 BFS_PORT=2581
-BFS_PASSWORD=""
+BFS_PASSWORD="${EXABFS_PASSWORD:-}"
 BUCKET=default
 BFS_SERVICE=bfsdefault
 SLC_NAME=mojoslc
 SCOPE=SESSION
 ALIAS=MOJO
+INSECURE_TLS=0                        # TLS cert validation is ON by default
 
 usage() {
   cat <<EOF
@@ -36,8 +37,8 @@ Build, upload, and register the native Mojo language container in Exasol.
 
 Required:
   -H, --host HOST            Exasol host
-  -p, --password PASS        Exasol DB password
-  -w, --bfs-password PASS    BucketFS write password
+      (DB + BucketFS write passwords — via env or an interactive prompt;
+       the CLI flags below exist but expose secrets in \`ps\`/history.)
 
 Options:
   -P, --port PORT            Exasol DB port        (default: 8563)
@@ -47,14 +48,20 @@ Options:
       --bfs-service NAME     BucketFS service      (default: bfsdefault)
       --slc-name NAME        SLC name in BucketFS  (default: mojoslc)
       --scope SESSION|SYSTEM ALTER scope           (default: SESSION)
+      --insecure             Disable TLS certificate validation (NOT recommended;
+                             validation is ON by default)
+  -p, --password PASS        Exasol DB password  (prefer EXASOL_PASSWORD/prompt)
+  -w, --bfs-password PASS    BucketFS write pw   (prefer EXABFS_PASSWORD/prompt)
   -h, --help                 Show this help
 
-Environment:
+Environment (preferred over the -p/-w flags — keeps secrets out of the CLI):
+  EXASOL_PASSWORD            Exasol DB password
+  EXABFS_PASSWORD            BucketFS write password
   MOJO_SLC_TARBALL           Use this prebuilt tarball instead of docker build.
   MOJO_VERSION               Passed to the Docker build (--build-arg).
 
-Example:
-  $(basename "$0") --host localhost --password exasol --bfs-password secret
+Example (prompts for both passwords):
+  $(basename "$0") --host localhost --user sys
 EOF
 }
 
@@ -74,15 +81,20 @@ while [[ $# -gt 0 ]]; do
        --bfs-service)  BFS_SERVICE="$2"; shift 2 ;;
        --slc-name)     SLC_NAME="$2";    shift 2 ;;
        --scope)        SCOPE="$2";       shift 2 ;;
+       --insecure)     INSECURE_TLS=1;   shift   ;;
     -h|--help)         usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
 
 require exapump
-[[ -z "$HOST" ]]         && die "--host is required"
-[[ -z "$PASSWORD" ]]     && die "--password is required"
-[[ -z "$BFS_PASSWORD" ]] && die "--bfs-password is required"
+[[ -z "$HOST" ]] && die "--host is required"
+
+# Prefer env/prompt for secrets so they never appear in \`ps\` or shell history.
+if [[ -z "$PASSWORD" && -t 0 ]]; then read -rsp "Exasol DB password: " PASSWORD; echo; fi
+if [[ -z "$BFS_PASSWORD" && -t 0 ]]; then read -rsp "BucketFS write password: " BFS_PASSWORD; echo; fi
+[[ -z "$PASSWORD" ]]     && die "DB password required (set EXASOL_PASSWORD, run interactively, or pass --password)"
+[[ -z "$BFS_PASSWORD" ]] && die "BucketFS password required (set EXABFS_PASSWORD, run interactively, or pass --bfs-password)"
 [[ -z "$BFS_SERVICE" ]]  && die "--bfs-service must not be empty"
 [[ -z "$BUCKET" ]]       && die "--bucket must not be empty"
 [[ -z "$SLC_NAME" ]]     && die "--slc-name must not be empty"
@@ -90,6 +102,14 @@ require exapump
 SCOPE_UPPER="$(printf '%s' "$SCOPE" | tr '[:lower:]' '[:upper:]')"
 [[ "$SCOPE_UPPER" == "SESSION" || "$SCOPE_UPPER" == "SYSTEM" ]] \
   || die "--scope must be SESSION or SYSTEM"
+
+# TLS validation on by default; --insecure opts out (with a loud warning).
+if [[ "$INSECURE_TLS" -eq 1 ]]; then
+  BFS_VALIDATE=false; TLS_VSC=0
+  echo "WARNING: TLS certificate validation is DISABLED (--insecure) — MITM risk on the SLC upload and SQL session." >&2
+else
+  BFS_VALIDATE=true;  TLS_VSC=1
+fi
 
 # ── step 1: build (or reuse) the tarball ──────────────────────────────────────
 if [[ -n "${MOJO_SLC_TARBALL:-}" ]]; then
@@ -121,11 +141,11 @@ exapump bucketfs cp "$TARBALL" "$BFS_PATH" \
   --bfs-bucket "$BUCKET" \
   --bfs-write-password "$BFS_PASSWORD" \
   --bfs-tls true \
-  --bfs-validate-certificate false
+  --bfs-validate-certificate "$BFS_VALIDATE"
 echo "==> Upload complete."
 
 # ── step 3: register, preserving existing languages ───────────────────────────
-DSN="exasol://${USER}:${PASSWORD}@${HOST}:${PORT}?validateservercertificate=0"
+DSN="exasol://${USER}:${PASSWORD}@${HOST}:${PORT}?validateservercertificate=${TLS_VSC}"
 ENTRY="${ALIAS}=localzmq+protobuf:///${BFS_SERVICE}/${BUCKET}/${SLC_PATH}?lang=mojo#buckets/${BFS_SERVICE}/${BUCKET}/${SLC_PATH}/exaudf/mojoudfclient"
 
 # Current SCRIPT_LANGUAGES value (may be empty). Strip header + surrounding quotes.
@@ -146,7 +166,9 @@ KEPT+=("$ENTRY")
 SCRIPT_LANGUAGES="${KEPT[*]}"
 
 echo "==> Registering ${ALIAS} at ${HOST}:${PORT} (ALTER ${SCOPE_UPPER} SET SCRIPT_LANGUAGES) …"
-exapump sql "ALTER ${SCOPE_UPPER} SET SCRIPT_LANGUAGES='${SCRIPT_LANGUAGES}'" -d "$DSN"
+# Escape single quotes so a pre-existing entry can't break out of the SQL literal.
+SCRIPT_LANGUAGES_ESC="${SCRIPT_LANGUAGES//\'/\'\'}"
+exapump sql "ALTER ${SCOPE_UPPER} SET SCRIPT_LANGUAGES='${SCRIPT_LANGUAGES_ESC}'" -d "$DSN"
 echo "==> Done. The ${ALIAS} script language is now available."
 echo
 echo "    SCRIPT_LANGUAGES entry:"
