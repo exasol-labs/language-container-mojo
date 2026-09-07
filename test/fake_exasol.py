@@ -16,7 +16,7 @@ import sys
 import zmq
 
 # message_type
-MT_CLIENT, MT_INFO, MT_META = 1, 2, 3
+MT_CLIENT, MT_INFO, MT_META, MT_CLOSE = 1, 2, 3, 4
 MT_NEXT, MT_EMIT, MT_RUN, MT_DONE, MT_CLEANUP, MT_FINISHED = 6, 8, 9, 10, 11, 12
 PB_INT64 = 3
 PB_NUMERIC = 4
@@ -143,6 +143,22 @@ def emit_strings(buf):
             out.append(int(bytes(buf[s:e]).decode()))
     return out
 
+def close_message(buf):
+    """Extract exception_message from an MT_CLOSE: close(5) -> exception_message(1)."""
+    def sub(field_no, start, end):
+        for f, w, v in walk(buf, start, end):
+            if f == field_no and w == 2:
+                return v
+        return None
+    close = sub(5, 0, len(buf))
+    if close is None:
+        return "(no close field)"
+    msg = sub(1, *close)
+    if msg is None:
+        return "(empty)"
+    s, e = msg
+    return bytes(buf[s:e]).decode("utf-8", "replace")
+
 # ---- messages the DB sends ------------------------------------------------
 
 def m_info(script="DOUBLE"):
@@ -182,13 +198,17 @@ def bare(mt):
 MTN = {1: "CLIENT", 2: "INFO", 3: "META", 6: "NEXT", 8: "EMIT", 9: "RUN",
        10: "DONE", 11: "CLEANUP", 12: "FINISHED", 13: "PING"}
 
-def run(bind, values, numeric=False, sum_mode=False):
+def run(bind, values, numeric=False, sum_mode=False, py_mode=False):
     ctx = zmq.Context()
     sock = ctx.socket(zmq.REP)
     sock.setsockopt(zmq.RCVTIMEO, 10000)   # 10s: fail loudly instead of hanging
     sock.bind(bind)
-    script = "SUM_POSITIVE" if sum_mode else "DOUBLE_MOJO"
-    expected = [sum(v for v in values if v > 0)] if sum_mode else [v * 2 for v in values]
+    if py_mode:                                    # PY_SCALE: Python interop, v*10
+        script = "PY_SCALE"; expected = [v * 10 for v in values]
+    elif sum_mode:
+        script = "SUM_POSITIVE"; expected = [sum(v for v in values if v > 0)]
+    else:
+        script = "DOUBLE_MOJO"; expected = [v * 2 for v in values]
 
     def step(expect_mt):
         try:
@@ -200,6 +220,8 @@ def run(bind, values, numeric=False, sum_mode=False):
         mt = msg_type(got)
         print("  <- %s(%d)" % (MTN.get(mt, "?"), mt), flush=True)
         if mt != expect_mt:
+            if mt == MT_CLOSE:                       # surface the UDF error text
+                print("  !! container CLOSE: " + close_message(got), file=sys.stderr)
             print("  !! expected %s(%d) but the container sent %s(%d)"
                   % (MTN.get(expect_mt, "?"), expect_mt, MTN.get(mt, "?"), mt),
                   file=sys.stderr)
@@ -232,10 +254,13 @@ def main():
                     help="send input in the NUMERIC/DECIMAL string block")
     ap.add_argument("--sum", action="store_true",
                     help="drive SUM_POSITIVE (SET) instead of DOUBLE (scalar)")
+    ap.add_argument("--pyscale", action="store_true",
+                    help="drive PY_SCALE (Python-interop scalar, v*10)")
     ap.add_argument("--values", default="10,21,-5,0,7")
     args = ap.parse_args()
     values = [int(x) for x in args.values.split(",")]
-    sys.exit(run(args.bind, values, numeric=args.numeric, sum_mode=args.sum))
+    sys.exit(run(args.bind, values, numeric=args.numeric, sum_mode=args.sum,
+                 py_mode=args.pyscale))
 
 if __name__ == "__main__":
     main()

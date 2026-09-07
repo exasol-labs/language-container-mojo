@@ -22,7 +22,7 @@ FROM debian:trixie AS builder
 # must be present here so the ldd walk can resolve and stage it. clang/lld cover
 # the linker mojo shells out to.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates python3 python3-pip clang lld libzmq5 \
+        ca-certificates python3 python3-dev python3-pip clang lld libzmq5 \
     && rm -rf /var/lib/apt/lists/*
 
 # VERIFY: install channel + version for your Mojo release. Modular ships Mojo via
@@ -92,6 +92,40 @@ RUN set -eu; \
     ldconfig -r /slc || true
 
 COPY build_info/ /slc/build_info/
+
+# ── Bundle a minimal CPython so Mojo's Python interop works inside the SLC ─────
+# The Mojo binary dlopens libpython at runtime (not in its ldd; guided by env set
+# in src/main.mojo). Stage libpython + its closure, the stdlib (incl. lib-dynload
+# and each C-extension's own shared-lib deps), any pip packages from
+# requirements.txt, and the bundled pyudf/ package — the last two on PYTHONPATH
+# at /opt/pypkgs so the Python side is extensible (add a line, rebuild).
+COPY requirements.txt /build/requirements.txt
+COPY python/ /build/python/
+RUN set -eu; \
+    PYVER="$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')"; \
+    LIBDIR="$(python3 -c 'import sysconfig;print(sysconfig.get_config_var("LIBDIR"))')"; \
+    SONAME="$(python3 -c 'import sysconfig;print(sysconfig.get_config_var("INSTSONAME"))')"; \
+    STD="/usr/lib/python$PYVER"; \
+    stage_closure() { ldd "$1" 2>/dev/null | sed -nE 's/.*=> (\/[^ ]+).*/\1/p' | while read -r p; do [ -e "$p" ] && { mkdir -p "/slc$(dirname "$p")"; cp -Lu "$p" "/slc$p"; }; done; }; \
+    # libpython + its shared-lib closure, plus a copy at a FIXED, arch-independent
+    # path so src/main.mojo can point MOJO_PYTHON_LIBRARY at it (a bare soname
+    # does not resolve for Mojo's Python loader inside the sandbox).
+    mkdir -p "/slc$LIBDIR"; cp -Lu "$LIBDIR/$SONAME" "/slc$LIBDIR/$SONAME"; stage_closure "$LIBDIR/$SONAME"; \
+    cp -Lu "$LIBDIR/$SONAME" /slc/exaudf/libpython.so; \
+    # the stdlib (trim heavy, UDF-irrelevant parts), incl. lib-dynload
+    mkdir -p "/slc$STD"; cp -a "$STD/." "/slc$STD/"; \
+    rm -rf "/slc$STD/test" "/slc$STD/idlelib" "/slc$STD/tkinter" "/slc$STD/turtledemo" "/slc$STD/ensurepip"; \
+    find "/slc$STD" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true; \
+    # shared-lib deps of every C extension module
+    for so in "/slc$STD"/lib-dynload/*.so; do [ -e "$so" ] && stage_closure "$so"; done; \
+    # extra pip packages + the bundled pyudf package -> /opt/pypkgs (PYTHONPATH)
+    mkdir -p /slc/opt/pypkgs; \
+    pip install --break-system-packages --target=/slc/opt/pypkgs -r /build/requirements.txt; \
+    cp -a /build/python/. /slc/opt/pypkgs/; \
+    # refresh the loader cache to include libpython + extension deps
+    find /slc -type f -name '*.so*' | sed 's#^/slc##; s#/[^/]*$##' | sort -u > /slc/etc/ld.so.conf.d/mojo.conf; \
+    ldconfig -r /slc || true; \
+    echo "bundled CPython $PYVER ($SONAME) + stdlib into the SLC"
 
 # ── Stage 2: packager ─────────────────────────────────────────────────────────
 # A clean slim base: only packages the pre-assembled rootfs, proves it loads, tars.

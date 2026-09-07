@@ -31,3 +31,13 @@ SELECT SUM_POSITIVE(val) FROM (VALUES 10, 21, -5, 0, 7) t(val);   -- 38
 
 -- Grouped example:
 -- SELECT dept, SUM_POSITIVE(amount) FROM sales GROUP BY dept;
+
+-- SCALAR implemented in Python via Mojo's Python interop: imports the bundled
+-- module pyudf.transform and calls scale(v) -> v * 10. The CPython runtime and
+-- pyudf ship inside the container; add more packages via requirements.txt.
+CREATE OR REPLACE MOJO SCALAR SCRIPT PY_SCALE(val BIGINT)
+RETURNS BIGINT AS
+-- native client dispatches by script name; body ignored
+/
+
+SELECT PY_SCALE(val) FROM (VALUES 10, 21, -5, 0, 7) t(val);   -- 100, 210, -50, 0, 70

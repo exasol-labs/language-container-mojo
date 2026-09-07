@@ -1,0 +1,3 @@
+# Extra Python packages for the Mojo UDF's Python interop.
+# Add one per line (e.g. `numpy==2.1.0`), then rebuild the SLC — they are
+# pip-installed into /opt/pypkgs in the rootfs (on PYTHONPATH) at build time.

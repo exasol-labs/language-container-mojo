@@ -22,6 +22,24 @@ from udf import run_udf, is_known
 fn die(code: Int):
     external_call["exit", NoneType](Int32(code))
 
+fn _setenv(name: String, value: String):
+    var n = name + "\0"
+    var v = value + "\0"
+    _ = external_call["setenv", Int32](n.unsafe_ptr(), v.unsafe_ptr(), Int32(1))
+
+# Point Mojo's Python interop at the CPython bundled in the SLC rootfs, so
+# `Python.import_module(...)` works inside the sandbox (no python3 on PATH there).
+#   MOJO_PYTHON_LIBRARY : fixed absolute path to libpython staged by the Dockerfile
+#                         (a bare soname does not resolve for Mojo's Python loader)
+#   PYTHONHOME          : prefix holding lib/python3.13 (Debian layout → /usr)
+#   PYTHONPATH          : extra pip packages + the bundled pyudf/ package
+#   PYTHONDONTWRITEBYTECODE : the rootfs is read-only; don't try to write .pyc
+fn setup_python_env():
+    _setenv("MOJO_PYTHON_LIBRARY", "/exaudf/libpython.so")
+    _setenv("PYTHONHOME", "/usr")
+    _setenv("PYTHONPATH", "/opt/pypkgs")
+    _setenv("PYTHONDONTWRITEBYTECODE", "1")
+
 fn fail(mut sock: ZmqReq, conn_id: UInt64, msg: String):
     # Best-effort MT_CLOSE with an F-UDF-CL-MOJO-#### message, then report + exit.
     try:
@@ -43,6 +61,8 @@ fn main() raises:
     if lang != "lang=mojo":
         print("F-UDF-CL-MOJO-0002: unsupported language argument '" + lang + "'")
         die(2)
+
+    setup_python_env()   # make the bundled CPython discoverable to Python interop
 
     var sock = ZmqReq(endpoint)
     var conn_id: UInt64 = 0
@@ -103,14 +123,18 @@ fn main() raises:
             for i in range(len(col[0])):
                 in_vals.append(col[0][i]); in_nulls.append(col[1][i])
 
-        var res = run_udf(script_name, in_vals, in_nulls)
-
-        # Emit the group's output as one MT_EMIT, packed into the block the
-        # output column's declared type uses (INT64 / INT32 / NUMERIC-string).
-        if len(res[0]) > 0:
-            var out_type = output_cols[0].col_type if len(output_cols) > 0 else PB_INT64
-            sock.send(enc_emit_i64(conn_id, out_type, res[0], res[1]))
-            _ = sock.recv()                           # MT_EMIT ack
+        # Run the UDF (may raise — e.g. a Python-backed UDF) and emit its output
+        # as one MT_EMIT, packed into the block the output column's declared type
+        # uses (INT64 / INT32 / NUMERIC-string). A UDF error becomes MT_CLOSE.
+        try:
+            var res = run_udf(script_name, in_vals, in_nulls)
+            if len(res[0]) > 0:
+                var out_type = output_cols[0].col_type if len(output_cols) > 0 else PB_INT64
+                sock.send(enc_emit_i64(conn_id, out_type, res[0], res[1]))
+                _ = sock.recv()                       # MT_EMIT ack
+        except e:
+            fail(sock, conn_id, "udf '" + script_name + "': " + String(e))
+            return
         sock.send(enc_bare(MT_DONE, conn_id))
         var after = decode_response(sock.recv())
         conn_id = after.conn_id

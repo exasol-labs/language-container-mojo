@@ -260,6 +260,41 @@ conn.close()
 PY
 ```
 
+## Calling Python from a UDF (Python interop)
+
+A Mojo UDF can call Python via Mojo's interop — `from python import Python` then
+`Python.import_module("pkg.sub")`. The container bundles a **minimal CPython**
+(interpreter + stdlib + `libpython`) into the rootfs so this works inside the
+sandbox; `src/main.mojo` points `MOJO_PYTHON_LIBRARY`/`PYTHONHOME`/`PYTHONPATH`
+at it at startup.
+
+The shipped example is `PY_SCALE`, which imports the bundled module
+[`python/pyudf/transform.py`](python/pyudf/transform.py) and calls `scale(v)`:
+
+```mojo
+# src/udf.mojo
+from python import Python
+
+fn run_py_scale(values: List[Int64], nulls: List[Bool]) raises -> (List[Int64], List[Bool]):
+    var transform = Python.import_module("pyudf.transform")   # dotted import
+    ...
+    var r = transform.scale(values[i])                        # call the Python fn
+    out.append(Int(r))
+```
+```sql
+SELECT PY_SCALE(val) FROM (VALUES 10, 21, -5, 0, 7) t(val);   -- 100,210,-50,0,70
+```
+
+**Adding Python packages** — list them in [`requirements.txt`](requirements.txt)
+(one per line, e.g. `numpy==2.1.0`) and rebuild. They're `pip install`ed into
+`/opt/pypkgs` in the rootfs (on `PYTHONPATH`), so `Python.import_module("numpy")`
+resolves. Your own modules go in `python/` (shipped to `/opt/pypkgs` too).
+
+> Verified offline: `PY_SCALE` drives CPython inside the hermetic rootfs via the
+> chroot self-test. Note each `import`/call crosses the Mojo↔Python boundary, so
+> Python interop trades performance for library access — use it where the Python
+> ecosystem earns its keep.
+
 ## Diagnosing a live run
 
 If a live `SELECT DOUBLE_MOJO(21)` returns an empty set or `22002 VM crashed`, build
@@ -288,20 +323,22 @@ container must read/emit the NUMERIC/string block instead of `data_int64`.
 The whole repo is the language container — everything is Mojo, no Rust.
 
 ```
-src/udf.mojo          ← the UDFs: DOUBLE_MOJO (scalar) + SUM_POSITIVE (set) + dispatch
+src/udf.mojo          ← the UDFs: DOUBLE_MOJO, SUM_POSITIVE, PY_SCALE + dispatch
 src/main.mojo         protocol host: argv → connect → handshake → run loop
 src/diag.mojo         diagnostic entry point (reports Exasol's wire encoding)
 src/wire.mojo         Exasol message encode/decode + exascript_table_data
 src/proto.mojo        hand-rolled protobuf primitives
 src/zmq.mojo          libzmq FFI (runtime dlopen)
-Dockerfile            build binary + package hermetic SLC rootfs
+Dockerfile            build binary + package hermetic SLC rootfs (incl. CPython)
 build_info/…json      SLC self-description (MOJO alias → /exaudf/mojoudfclient)
 install-native.sh     one command: build → BucketFS upload → register (Enterprise)
 build.md              build / test / package / register runbook
 DESIGN.md             architecture + the extracted Exasol wire-protocol reference
+requirements.txt      extra Python packages to bundle (pip → /opt/pypkgs)
+python/pyudf/         Python modules callable from UDFs via interop
 test/fake_exasol.py   offline protocol oracle (the self-test)
 test/diag_probe.py    offline check for the diagnostic build
-examples/register.sql activate the language + create/call DOUBLE_MOJO & SUM_POSITIVE
+examples/register.sql activate the language + create/call all three UDFs
 examples/triple.mojo  worked example: adding a new native UDF
 ```
 
@@ -312,9 +349,13 @@ examples/triple.mojo  worked example: adding a new native UDF
   returned an empty result; the likely cause — Exasol delivering `BIGINT` in the
   NUMERIC/string block — is now handled, but a live run has not yet been
   re-confirmed. Use the [diagnostic build](#diagnosing-a-live-run) if it recurs.
-- **The UDFs are hard-coded.** `src/udf.mojo` ships `DOUBLE_MOJO` (SCALAR) and
-  `SUM_POSITIVE` (SET), both `BIGINT → BIGINT`. To change/add a UDF, edit the
-  `run_udf` dispatch + implementation, rebuild the SLC, and redeploy.
+- **The UDFs are hard-coded.** `src/udf.mojo` ships `DOUBLE_MOJO` (SCALAR),
+  `SUM_POSITIVE` (SET), and `PY_SCALE` (SCALAR via Python interop), all
+  `BIGINT → BIGINT`. To change/add a UDF, edit the `run_udf` dispatch +
+  implementation, rebuild the SLC, and redeploy.
+- **Python interop is available** (bundled CPython + stdlib; extra packages via
+  `requirements.txt`). It adds ~17 MB to the rootfs and crosses the Mojo↔Python
+  boundary per call — use it for library access, not hot numeric loops.
 - **Column type coverage.** Integer columns are read/written across the `data_int64`,
   `data_int32`, and NUMERIC/DECIMAL `data_string` blocks. `DOUBLE` (floating point),
   other types, and EMITS (multi-row output) are not yet implemented; SET input
