@@ -49,14 +49,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
       - name: gitleaks
+        # Pinned Docker image (no Node action, no fragile binary download).
+        # --no-git scans the checked-out files (avoids the container's git
+        # "dubious ownership" error on the mounted workspace); a leak → exit 1.
         run: |
-          ver=8.18.4
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
-            | tar -xz gitleaks
-          ./gitleaks detect --source . --no-banner --redact --exit-code 1
+          docker run --rm -v "${{ github.workspace }}:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.18.4 \
+            detect --source /repo --no-git --no-banner --redact
 
   selftest:
     name: Build SLC + protocol self-test
