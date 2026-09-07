@@ -78,29 +78,39 @@ struct ZmqReq:
                 continue
             raise Error("zmq_send failed")
 
-    # Receive one frame. libzmq truncates to the buffer but returns the true
-    # size, so grow and retry if the message was larger than the buffer.
+    # Receive one frame using the zmq_msg API, which handles arbitrary sizes
+    # (plain zmq_recv into a fixed buffer TRUNCATES and consumes anything larger,
+    # silently corrupting big source_code / data batches). A sanity cap bounds a
+    # hostile/huge frame so it errors instead of exhausting memory.
     fn recv(self) raises -> List[UInt8]:
-        var recv_fn = self.lib.get_function[
-            fn (Ptr, UnsafePointer[UInt8], Int, Int32) -> Int32]("zmq_recv")
-        var cap = 65536
+        alias MAX_MSG = 256 * 1024 * 1024        # 256 MiB backstop
+        # zmq_msg_t is a 64-byte opaque struct; allocate 8-byte-aligned storage.
+        var msg = UnsafePointer[UInt64].alloc(8).bitcast[c_void]()
+        _ = self.lib.get_function[fn (Ptr) -> Int32]("zmq_msg_init")(msg)
+        var msg_recv = self.lib.get_function[fn (Ptr, Ptr, Int32) -> Int32]("zmq_msg_recv")
+        var n: Int32 = 0
         while True:
-            var buf = UnsafePointer[UInt8].alloc(cap)
-            var n = recv_fn(self.sock, buf, cap, Int32(0))
-            if n < 0:
-                buf.free()
-                if self._errno() == EAGAIN:
-                    continue
-                raise Error("zmq_recv failed")
-            if Int(n) > cap:
-                buf.free()
-                cap = Int(n)          # message bigger than buffer → grow, retry
-                continue
-            var out = List[UInt8]()
-            for i in range(Int(n)):
-                out.append(buf[i])
-            buf.free()
-            return out^
+            n = msg_recv(msg, self.sock, Int32(0))
+            if n >= 0:
+                break
+            if self._errno() == EAGAIN:
+                continue                          # poll interval elapsed; keep waiting
+            _ = self.lib.get_function[fn (Ptr) -> Int32]("zmq_msg_close")(msg)
+            msg.bitcast[UInt64]().free()
+            raise Error("zmq_msg_recv failed")
+
+        var size = Int(n)
+        var data = self.lib.get_function[fn (Ptr) -> UnsafePointer[UInt8]]("zmq_msg_data")(msg)
+        var out = List[UInt8]()
+        if size > MAX_MSG:
+            _ = self.lib.get_function[fn (Ptr) -> Int32]("zmq_msg_close")(msg)
+            msg.bitcast[UInt64]().free()
+            raise Error("zmq_msg_recv: frame exceeds " + String(MAX_MSG) + " bytes")
+        for i in range(size):
+            out.append(data[i])
+        _ = self.lib.get_function[fn (Ptr) -> Int32]("zmq_msg_close")(msg)
+        msg.bitcast[UInt64]().free()
+        return out^
 
     fn close(mut self):
         _ = self.lib.get_function[fn (Ptr) -> Int32]("zmq_close")(self.sock)

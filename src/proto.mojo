@@ -120,11 +120,14 @@ struct Reader:
         return (Int(t >> 3), Int(t & 0x7))
 
     fn read_len(mut self) raises -> (Int, Int):
-        var n = Int(self.read_varint())
+        # Validate the length against the bytes remaining BEFORE advancing, so a
+        # huge/hostile length can't overflow `pos` past the end check (untrusted
+        # input). `end - pos` is a non-negative Int (pos <= end invariant).
+        var n = self.read_varint()
+        if n > UInt64(self.end - self.pos):
+            raise Error("protobuf: length-delimited field exceeds message")
         var s = self.pos
-        self.pos += n
-        if self.pos > self.end:
-            raise Error("protobuf: length-delimited field truncated")
+        self.pos += Int(n)
         return (s, self.pos)
 
     fn read_string(mut self) raises -> String:

@@ -11,6 +11,12 @@
 #
 # Requires: exapump; and docker (unless MOJO_SLC_TARBALL points at a prebuilt
 # tarball). Run from the repo root.
+#
+# Security note: passwords are taken from env/prompt (not this script's CLI), but
+# they are still passed to `exapump` (in the DSN and --bfs-write-password), so
+# they transit exapump's own argv — visible via `ps` on a shared host for the
+# duration of the call. Run installs from a trusted host; if exapump gains an
+# env/stdin password option, prefer it here.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
