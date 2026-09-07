@@ -1,5 +1,4 @@
-# Native Mojo Language Container for Exasol
-
+# Native Mojo Script Language Container
 [![CI](https://github.com/exasol-labs/language-container-mojo/actions/workflows/ci.yml/badge.svg)](https://github.com/exasol-labs/language-container-mojo/actions/workflows/ci.yml)
 
 A Script Language Container (SLC) for Exasol written **entirely in [Mojo](https://www.modular.com/mojo) — no Rust, no C++ host, no `.so` plugin loading.**
