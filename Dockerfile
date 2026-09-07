@@ -163,19 +163,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /slc /slc
 COPY test/fake_exasol.py /fake_exasol.py
+# Exercise every UDF/wire combination the container supports: DOUBLE_MOJO
+# (scalar) and SUM_POSITIVE (set) over the INT64 block, DOUBLE_MOJO over the
+# NUMERIC/string block, and PY_SCALE (Python interop). Each case runs the real
+# binary in the chroot against the fake Exasol; the build fails if any diverges.
 RUN set -u; \
-    echo "=== starting fake Exasol ==="; \
-    python3 /fake_exasol.py --bind tcp://127.0.0.1:6583 > /fake.out 2>&1 & \
-    FAKE=$!; \
-    sleep 1; \
-    echo "=== launching mojoudfclient (chroot) ==="; \
-    timeout 20 chroot /slc /exaudf/mojoudfclient tcp://127.0.0.1:6583 lang=mojo; \
-    echo "=== container exit code: $? ==="; \
-    wait "$FAKE" 2>/dev/null || true; \
-    echo "=== fake Exasol trace ==="; \
-    cat /fake.out; \
-    echo "==="; \
-    grep -qE "OK: .*verified" /fake.out
+    run_case() { \
+        echo "=== case: fake_exasol $* ==="; \
+        python3 /fake_exasol.py "$@" > /fake.out 2>&1 & FAKE=$!; \
+        sleep 1; \
+        timeout 25 chroot /slc /exaudf/mojoudfclient tcp://127.0.0.1:6583 lang=mojo > /c.out 2>&1 || true; \
+        wait "$FAKE" 2>/dev/null || true; \
+        cat /fake.out; \
+        grep -qE "OK: .*verified" /fake.out || { echo "SELFTEST FAILED for: fake_exasol $*"; sed -n '1,4p' /c.out; exit 1; }; \
+        sleep 1; \
+    }; \
+    run_case; \
+    run_case --sum; \
+    run_case --numeric; \
+    run_case --pyscale; \
+    echo "=== ALL SELFTEST CASES PASSED ==="
 
 # ── Stage 3: artifact ─────────────────────────────────────────────────────────
 FROM scratch AS artifact

@@ -86,15 +86,20 @@ No linker flags: `src/zmq.mojo` `dlopen`s `libzmq.so.5` at runtime, so `mojo bui
 never touches the linker.
 
 The fastest correctness check is the **self-test target**, which drives the real
-binary through the entire ZMQ/protobuf conversation against a bundled fake Exasol
-and must print `OK: doubling verified`:
+binary in a chroot through the entire ZMQ/protobuf conversation against a bundled
+fake Exasol — for **every** UDF/wire combination:
+
+- `DOUBLE_MOJO` (scalar) and `SUM_POSITIVE` (set) over the INT64 block,
+- `DOUBLE_MOJO` over the NUMERIC/string block,
+- `PY_SCALE` (Python interop) — proving CPython initializes inside the sandbox.
 
 ```bash
 docker build -f Dockerfile --target selftest --progress=plain .
 ```
-(Use `podman build --arch arm64 …` on Apple Silicon.) It prints a per-message
-trace (`CLIENT → META → RUN → NEXT → EMIT → DONE → FINISHED`) — invaluable for
-debugging the wire code before touching a database.
+(Use `podman build --arch arm64 …` on Apple Silicon.) Each case prints a
+per-message trace (`CLIENT → META → RUN → NEXT → EMIT → DONE → FINISHED`) and an
+`OK: <script> verified` line; the build fails if any case diverges — invaluable
+for debugging the wire code before touching a database.
 
 ## 3. Build the SLC package
 
