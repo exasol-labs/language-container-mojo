@@ -13,7 +13,7 @@ jobs:
     name: Lint (shell, Dockerfile, Python, deps)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: shellcheck
         run: |
@@ -22,13 +22,14 @@ jobs:
           shellcheck install-native.sh
 
       - name: hadolint (Dockerfile)
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
-          # DL3008 apt version pin — base image is digest-pinned instead
-          # DL3042 pip --no-cache-dir — build-only layer, not shipped
-          # DL4006 pipefail — RUN pipes are guarded by explicit checks
-          ignore: DL3008,DL3042,DL4006
+        # Run via the pinned Docker image (not a Node action), so it is unaffected
+        # by the GitHub Node-20 runner deprecation. Ignores are deliberate:
+        #   DL3008 apt version pin — base image is digest-pinned instead
+        #   DL3042 pip --no-cache-dir — build-only layer, not shipped
+        #   DL4006 pipefail — RUN pipes are guarded by explicit checks
+        run: |
+          docker run --rm -i hadolint/hadolint:2.12.0 \
+            hadolint --ignore DL3008 --ignore DL3042 --ignore DL4006 - < Dockerfile
 
       - name: Python syntax
         run: |
@@ -47,7 +48,7 @@ jobs:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: gitleaks
@@ -61,7 +62,7 @@ jobs:
     name: Build SLC + protocol self-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Builds the container (Mojo + bundled CPython) and drives the real binary
       # through the full ZMQ/protobuf exchange for every UDF/wire combination
       # (DOUBLE_MOJO int64 + NUMERIC, SUM_POSITIVE, PY_SCALE). Fails on any divergence.
