@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (shell, Dockerfile, Python, deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck install-native.sh
+
+      - name: hadolint (Dockerfile)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          # DL3008 apt version pin — base image is digest-pinned instead
+          # DL3042 pip --no-cache-dir — build-only layer, not shipped
+          # DL4006 pipefail — RUN pipes are guarded by explicit checks
+          ignore: DL3008,DL3042,DL4006
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile test/fake_exasol.py test/diag_probe.py python/pyudf/*.py
+
+      - name: Dependency audit (requirements.txt)
+        run: |
+          if grep -qvE '^[[:space:]]*(#.*)?$' requirements.txt; then
+            pip install --user pip-audit
+            python3 -m pip_audit -r requirements.txt
+          else
+            echo "requirements.txt has no packages — nothing to audit"
+          fi
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: |
+          ver=8.18.4
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --source . --no-banner --redact --exit-code 1
+
+  selftest:
+    name: Build SLC + protocol self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Builds the container (Mojo + bundled CPython) and drives the real binary
+      # through the full ZMQ/protobuf exchange for every UDF/wire combination
+      # (DOUBLE_MOJO int64 + NUMERIC, SUM_POSITIVE, PY_SCALE). Fails on any divergence.
+      - name: docker build --target selftest
+        run: docker build -f Dockerfile --target selftest --progress=plain .
