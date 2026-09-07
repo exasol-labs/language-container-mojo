@@ -1,0 +1,55 @@
+# GitLab CI for the native Mojo SLC — mirrors .github/workflows/ci.yml.
+#
+# Designed for a SHELL executor on a host that has Docker (every job shells out
+# to `docker`, exactly like the steps verified locally). Register the runner with
+# `--executor shell` and "run untagged jobs" enabled (see the repo notes / chat).
+# If you instead use a Docker executor you'll need docker-in-docker (dind); ask
+# for that variant.
+
+stages: [lint, security, test]
+
+variables:
+  GIT_DEPTH: "20"          # shallow clone is fine; gitleaks scans files (--no-git)
+
+shellcheck:
+  stage: lint
+  script:
+    - docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable install-native.sh
+
+hadolint:
+  stage: lint
+  # DL3008 apt pin (base is digest-pinned), DL3042 pip cache (build-only),
+  # DL4006 pipefail (RUN pipes are guarded) — deliberately ignored.
+  script:
+    - docker run --rm -i hadolint/hadolint:2.12.0 hadolint --ignore DL3008 --ignore DL3042 --ignore DL4006 - < Dockerfile
+
+python-syntax:
+  stage: lint
+  script:
+    - docker run --rm -v "$PWD:/w" -w /w python:3.13-slim
+        python -m py_compile test/fake_exasol.py test/diag_probe.py
+        python/pyudf/__init__.py python/pyudf/transform.py
+
+gitleaks:
+  stage: security
+  script:
+    - docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.18.4
+        detect --source /repo --no-git --no-banner --redact
+
+dep-audit:
+  stage: security
+  script:
+    - |
+      if grep -qvE '^[[:space:]]*(#.*)?$' requirements.txt; then
+        docker run --rm -v "$PWD:/w" -w /w python:3.13-slim \
+          sh -c "pip install --root-user-action=ignore pip-audit && python -m pip_audit -r requirements.txt"
+      else
+        echo "requirements.txt has no packages — nothing to audit"
+      fi
+
+selftest:
+  stage: test
+  # Builds the SLC (Mojo + bundled CPython) and drives the real binary through
+  # the full protocol matrix (DOUBLE_MOJO int64+NUMERIC, SUM_POSITIVE, PY_SCALE).
+  script:
+    - docker build -f Dockerfile --target selftest --progress=plain .
