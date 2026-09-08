@@ -26,6 +26,25 @@ C-ABI vtable, no fingerprint, no `dlopen` of a compiled `.so`.
 
 ---
 
+## Why a Mojo Script Language Container
+
+A Script Language Container (SLC) is a self-contained runtime that you install into
+Exasol so the database can execute user-defined functions (UDFs) in a language it
+doesn't ship natively, letting you push custom logic to where the data lives instead
+of pulling rows out to an external service. Running your code *inside* the database
+this way eliminates network round-trips and serialization overhead, so heavy per-row
+or per-group computation happens in-place, in parallel across Exasol's nodes. Mojo is
+a compelling language for that hot path because it is a compiled, statically-typed
+language that produces native machine code — no interpreter loop, no per-call bytecode
+dispatch — making it dramatically faster than a scripting language for CPU-bound work.
+At the same time Mojo is a member of the Python ecosystem: it interoperates with
+CPython via `Python.import_module`, so you can reuse existing Python packages and
+gradually move only the performance-critical parts to native Mojo. The result is a UDF
+container that gives you Python's familiarity and libraries where you want them, and
+compiled, close-to-the-metal speed where you need it — inside the database engine itself.
+
+---
+
 ## The workflow at a glance
 
 1. [Write your UDF in Mojo](#1-write-your-udf-in-mojo) — `src/udf.mojo`
