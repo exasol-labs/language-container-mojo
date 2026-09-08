@@ -169,7 +169,16 @@ COPY test/fake_exasol.py /fake_exasol.py
 # (scalar) and SUM_POSITIVE (set) over the INT64 block, DOUBLE_MOJO over the
 # NUMERIC/string block, and PY_SCALE (Python interop). Each case runs the real
 # binary in the chroot against the fake Exasol; the build fails if any diverges.
+# The Mojo runtime (LLVM host-CPU detection in libKGENCompilerRTShared.so) reads
+# /proc/cpuinfo when it JITs the Python-interop bridge. The chroot has no mounted
+# /proc, so on x86_64 that read hangs and the container never emits (arm64
+# tolerates the absence — which is why this only failed on x86 CI). Exasol's real
+# sandbox bind-mounts /proc; an unprivileged `docker build` RUN cannot `mount -t
+# proc`, so drop a static copy of the builder's cpuinfo into the chroot. This is
+# selftest-only: the shipped SLC tarball (staging stage) keeps /slc/proc an empty
+# mount point, so production is unaffected.
 RUN set -u; \
+    cp /proc/cpuinfo /slc/proc/cpuinfo 2>/dev/null || true; \
     run_case() { \
         echo "=== case: fake_exasol $* ==="; \
         python3 /fake_exasol.py "$@" > /fake.out 2>&1 & FAKE=$!; \
