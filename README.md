@@ -45,6 +45,31 @@ compiled, close-to-the-metal speed where you need it — inside the database eng
 
 ---
 
+## When to reach for a UDF — and when to stay in SQL
+
+**Try SQL first; drop to a UDF only when SQL can't express the work efficiently.**
+Exasol's SQL engine is heavily optimized and massively parallel, so set-based
+work — filters, joins, aggregations, window functions — belongs in SQL, where a
+hand-written UDF would usually be slower and harder to maintain. A UDF earns its
+place when the logic is a poor fit for relational algebra: complex per-row or
+per-group procedures, iterative or stateful algorithms, custom parsing, or bespoke
+numeric/string routines you'd otherwise pull out of the database into an external
+service. The rule of thumb: if SQL becomes contorted, needs many passes, or simply
+can't do it, that's when a UDF is worth it.
+
+**Once you do need a UDF, Mojo is the fast path.** It compiles to native machine
+code, so a CPU-bound hot path runs without an interpreter loop — often far faster
+than a scripting-language UDF for the same inner computation. Because Mojo is part
+of the Python ecosystem and calls CPython via `Python.import_module`, you don't
+have to rewrite everything at once: **keep the bulk of your logic in Python and
+move only the performance-critical inner loop to native Mojo**, incrementally.
+When you want a fully compiled, dependency-light function, you can also write the
+UDF **from scratch** in pure Mojo. Reach for this container when you've identified
+a genuine hot path inside the database and want compiled speed there while keeping
+Python's familiarity and libraries everywhere else.
+
+---
+
 ## The workflow at a glance
 
 1. [Write your UDF in Mojo](#1-write-your-udf-in-mojo) — `src/udf.mojo`
