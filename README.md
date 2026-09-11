@@ -75,7 +75,7 @@ Python's familiarity and libraries everywhere else.
 1. [Write your UDF in Mojo](#1-write-your-udf-in-mojo) — `src/udf.mojo`
 2. [Compile & self-test](#2-compile--self-test-no-exasol-needed) — no Exasol needed
 3. [Build the SLC package](#3-build-the-slc-package) — one `docker`/`podman build`
-4. Deploy: [**Nano** (copy the directory)](#4a-deploy-to-exasol-nano-copy-the-directory) · [**Enterprise** (BucketFS via curl)](#4b-deploy-to-exasol-enterprise-bucketfs-via-curl)
+4. Deploy: [**Personal** (`exasol slc custom install`)](#4a-deploy-to-exasol-personal-exasol-slc-custom-install) · [**Nano** (copy the directory)](#4b-deploy-to-exasol-nano-copy-the-directory) · [**Enterprise** (BucketFS via curl)](#4c-deploy-to-exasol-enterprise-bucketfs-via-curl)
 5. [Activate the language container](#5-activate-the-language-container)
 6. [Create the script and run it](#6-create-the-script-and-run-it)
 
@@ -181,7 +181,33 @@ file mojo-rootfs/exaudf/mojoudfclient   # ARM64 Linux ELF on an ARM64 host
 `build_info/language_definitions.json` in the rootfs declares the
 `MOJO` alias and the executable path `/exaudf/mojoudfclient`.
 
-## 4a. Deploy to Exasol Nano (copy the directory)
+## 4a. Deploy to Exasol Personal (`exasol slc custom install`)
+
+Exasol Personal Edition installs a custom SLC directly with the `exasol` CLI —
+no BucketFS upload or bind mounts. The container is given as `--source`, which
+takes either a local tarball or an `https` URL, together with the `--alias` used
+in `CREATE <alias> SCALAR SCRIPT` and the `--language` it provides:
+
+```bash
+exasol slc custom install \
+  --source ./out/mojo-slc.tar.gz \
+  --alias MOJO \
+  --language mojo \
+  --auto-approve
+```
+
+Like the official commands, a custom `install` (or `update`) **restarts the
+database** to mount the container, so it accepts `--auto-approve` to skip the
+confirmation and `--no-restart` to record the container and activate it on the
+next start instead. If the container cannot be made available, the database
+still starts and the command reports that the container is recorded but not
+active.
+
+`exasol slc list` now shows custom containers alongside the official ones with a
+**status** column, and `--json` marks them with a `custom` type and an
+`available` field.
+
+## 4b. Deploy to Exasol Nano (copy the directory)
 
 Nano reads language metadata under `/exa/slc` and launches UDFs in `/exa/sandbox`
 — **mount the same unpacked rootfs at both paths** (this is the "copy it to the
@@ -206,7 +232,7 @@ podman run --rm -it --name exanano-mojo \
 Wait for `Database is now up and running!`. Default SYS credentials are
 `sys` / `exasol`. If port 8563 is taken, map another (e.g. `18563:8563`).
 
-## 4b. Deploy to Exasol Enterprise (BucketFS via curl)
+## 4c. Deploy to Exasol Enterprise (BucketFS via curl)
 
 Enterprise fetches the SLC from BucketFS over HTTP. Upload the tarball with a
 single `curl` PUT — BucketFS **auto-extracts** `*.tar.gz`, so `slc/mojoslc.tar.gz`
