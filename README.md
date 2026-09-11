@@ -75,7 +75,7 @@ Python's familiarity and libraries everywhere else.
 1. [Write your UDF in Mojo](#1-write-your-udf-in-mojo) — `src/udf.mojo`
 2. [Compile & self-test](#2-compile--self-test-no-exasol-needed) — no Exasol needed
 3. [Build the SLC package](#3-build-the-slc-package) — one `docker`/`podman build`
-4. Deploy: [**Personal** (`exasol slc custom install`)](#4a-deploy-to-exasol-personal-exasol-slc-custom-install) · [**Nano** (copy the directory)](#4b-deploy-to-exasol-nano-copy-the-directory) · [**Enterprise** (BucketFS via curl)](#4c-deploy-to-exasol-enterprise-bucketfs-via-curl)
+4. Deploy: [**Personal** (`exasol slc custom install`)](#4a-deploy-to-exasol-personal-exasol-slc-custom-install) · [**Enterprise** (BucketFS via curl)](#4b-deploy-to-exasol-enterprise-bucketfs-via-curl) · [**Nano** (Docker execution environment)](#4c-deploy-to-exasol-nano-copy-the-directory)
 5. [Activate the language container](#5-activate-the-language-container)
 6. [Create the script and run it](#6-create-the-script-and-run-it)
 
@@ -207,32 +207,7 @@ active.
 **status** column, and `--json` marks them with a `custom` type and an
 `available` field.
 
-## 4b. Deploy to Exasol Nano (copy the directory)
-
-Nano reads language metadata under `/exa/slc` and launches UDFs in `/exa/sandbox`
-— **mount the same unpacked rootfs at both paths** (this is the "copy it to the
-directory" step; a read-only bind mount is the copy). Persist Nano's database
-files in `nano-exa`. On first init, pass `builtinScriptLanguageName=slc/mojo`
-(persisted in `nano-exa/exasol.conf`; omit `init params=…` on later starts).
-`--security-opt unmask=ALL` is required for SLC/UDF execution.
-
-```bash
-mkdir -p nano-exa
-
-podman run --rm -it --name exanano-mojo \
-  --security-opt unmask=ALL --shm-size=512mb --pids-limit=-1 \
-  -p 127.0.0.1:8563:8563 \
-  -v "$PWD/nano-exa:/exa" \
-  -v "$PWD/mojo-rootfs:/exa/slc/mojo:ro" \
-  -v "$PWD/mojo-rootfs:/exa/sandbox:ro" \
-  docker.io/exasol/nano:latest \
-  init params='builtinScriptLanguageName=slc/mojo'
-```
-
-Wait for `Database is now up and running!`. Default SYS credentials are
-`sys` / `exasol`. If port 8563 is taken, map another (e.g. `18563:8563`).
-
-## 4c. Deploy to Exasol Enterprise (BucketFS via curl)
+## 4b. Deploy to Exasol Enterprise (BucketFS via curl)
 
 Enterprise fetches the SLC from BucketFS over HTTP. Upload the tarball with a
 single `curl` PUT — BucketFS **auto-extracts** `*.tar.gz`, so `slc/mojoslc.tar.gz`
@@ -262,10 +237,43 @@ curl -X PUT -T out/mojo-slc.tar.gz -u w \
 `install-native.sh` wraps build + this upload + registration into one
 command if you'd rather not do it by hand.
 
+## 4c. Deploy to Exasol Nano (copy the directory)
+
+Nano runs the whole Exasol database as a single local container, so **reach for
+it when you require Docker (or Podman) as the execution environment** — local
+development, CI, or a self-contained demo. It reads language metadata under
+`/exa/slc` and launches UDFs in `/exa/sandbox` — **mount the same unpacked rootfs
+at both paths** (this is the "copy it to the directory" step; a read-only bind
+mount is the copy). Persist Nano's database files in `nano-exa`. On first init,
+pass `builtinScriptLanguageName=slc/mojo` (persisted in `nano-exa/exasol.conf`;
+omit `init params=…` on later starts). `--security-opt unmask=ALL` is required
+for SLC/UDF execution.
+
+```bash
+mkdir -p nano-exa
+
+podman run --rm -it --name exanano-mojo \
+  --security-opt unmask=ALL --shm-size=512mb --pids-limit=-1 \
+  -p 127.0.0.1:8563:8563 \
+  -v "$PWD/nano-exa:/exa" \
+  -v "$PWD/mojo-rootfs:/exa/slc/mojo:ro" \
+  -v "$PWD/mojo-rootfs:/exa/sandbox:ro" \
+  docker.io/exasol/nano:latest \
+  init params='builtinScriptLanguageName=slc/mojo'
+```
+
+Wait for `Database is now up and running!`. Default SYS credentials are
+`sys` / `exasol`. If port 8563 is taken, map another (e.g. `18563:8563`).
+
 ## 5. Activate the language container
 
-Registration differs between the two deployments — this is the step that most
-often trips people up.
+Registration differs between deployments — this is the step that most often
+trips people up.
+
+**Personal** — nothing to do here: `exasol slc custom install --alias MOJO`
+already registered the alias and restarted the database, so the language is
+active immediately. Confirm with `exasol slc list` (the container shows as
+`available`).
 
 **Nano** — the SLC is mounted and named via `builtinScriptLanguageName`, so the
 alias points at that built-in name:
