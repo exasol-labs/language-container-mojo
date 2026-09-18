@@ -178,15 +178,24 @@ COPY test/fake_exasol.py /fake_exasol.py
 # selftest-only: the shipped SLC tarball (staging stage) keeps /slc/proc an empty
 # mount point, so production is unaffected.
 RUN set -u; \
+    # The Mojo runtime's LLVM host-CPU detection reads /proc/cpuinfo AND
+    # /sys/devices/system/cpu/.../cache; the chroot mounts neither, so drop
+    # static copies from the build container (real /proc, /sys) so x86_64 CPU
+    # detection succeeds. Selftest-only; Exasol bind-mounts the real trees.
     cp /proc/cpuinfo /slc/proc/cpuinfo 2>/dev/null || true; \
+    mkdir -p /slc/sys/devices/system/cpu; \
+    cp -a /sys/devices/system/cpu/cpu0 /slc/sys/devices/system/cpu/ 2>/dev/null || true; \
     run_case() { \
         echo "=== case: fake_exasol $* ==="; \
         python3 /fake_exasol.py "$@" > /fake.out 2>&1 & FAKE=$!; \
         sleep 1; \
-        timeout 25 chroot /slc /exaudf/mojoudfclient tcp://127.0.0.1:6583 lang=mojo > /c.out 2>&1 || true; \
+        timeout 40 chroot /slc /exaudf/mojoudfclient tcp://127.0.0.1:6583 lang=mojo > /c.out 2>&1 || true; \
         wait "$FAKE" 2>/dev/null || true; \
         cat /fake.out; \
-        grep -qE "^OK:" /fake.out || { echo "SELFTEST FAILED for: fake_exasol $*"; sed -n '1,4p' /c.out; exit 1; }; \
+        grep -qE "^OK:" /fake.out || { echo "SELFTEST FAILED for: fake_exasol $*"; \
+            echo "----- container stderr (/c.out) -----"; cat /c.out; \
+            echo "----- fake DB trace (/fake.out) -----"; cat /fake.out; \
+            exit 1; }; \
         sleep 1; \
     }; \
     run_case; \

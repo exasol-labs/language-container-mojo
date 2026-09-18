@@ -257,7 +257,7 @@ def run(bind, values, numeric=False, sum_mode=False, py_mode=False,
         emit_mode=False, splits=1):
     ctx = zmq.Context()
     sock = ctx.socket(zmq.REP)
-    sock.setsockopt(zmq.RCVTIMEO, 10000)   # 10s: fail loudly instead of hanging
+    sock.setsockopt(zmq.RCVTIMEO, 20000)   # 20s: headroom for slow (cold x86 CI) starts
     sock.bind(bind)
     if py_mode:                                    # PY_SCALE: Python interop, v*10
         script = "PY_SCALE"; expected = [v * 10 for v in values]
@@ -365,7 +365,7 @@ def run_coltype(bind, name):
     kind, want = case["expect"]
     ctx = zmq.Context()
     sock = ctx.socket(zmq.REP)
-    sock.setsockopt(zmq.RCVTIMEO, 10000)
+    sock.setsockopt(zmq.RCVTIMEO, 20000)   # 20s: headroom for slow (cold x86 CI) starts
     sock.bind(bind)
 
     expect_msg(sock, MT_CLIENT); sock.send(m_info("DOUBLE_MOJO"))
