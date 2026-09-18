@@ -68,6 +68,7 @@ struct Response(Copyable, Movable):
     var mt: Int
     var conn_id: UInt64
     var script_name: String       # from MT_INFO
+    var source_code: String       # from MT_INFO (carries %udf_object, if any)
     var input_cols: List[ColumnDef]
     var output_cols: List[ColumnDef]
     var input_iter: Int           # 1 = EXACTLY_ONCE (scalar), 2 = MULTIPLE (set)
@@ -136,7 +137,8 @@ fn decode_table(mut r: Reader, s: Int, e: Int) raises -> TableData:
     return td^
 
 fn decode_response(var bytes: List[UInt8]) raises -> Response:
-    var resp = Response(0, 0, String(""), List[ColumnDef](), List[ColumnDef](),
+    var resp = Response(0, 0, String(""), String(""),
+                        List[ColumnDef](), List[ColumnDef](),
                         1, False, False,
                         TableData(0, List[String](), List[Bool](), List[Bool](),
                                   List[Int64](), List[Int64](), List[Float64]()),
@@ -153,6 +155,7 @@ fn decode_response(var bytes: List[UInt8]) raises -> Response:
         elif field == 4 and wire == WIRE_LEN:           # info (MT_INFO)
             var span = r.read_len()
             resp.script_name = extract_info_script_name(r, span[0], span[1])
+            resp.source_code = extract_info_source_code(r, span[0], span[1])
         elif field == 5 and wire == WIRE_LEN:           # meta (MT_META)
             var span = r.read_len()
             decode_meta_into(r, span[0], span[1], resp)
@@ -181,6 +184,19 @@ fn extract_info_script_name(mut r: Reader, s: Int, e: Int) raises -> String:
         else: r.skip(t[1])
     r.pos = sp; r.end = se
     return name
+
+fn extract_info_source_code(mut r: Reader, s: Int, e: Int) raises -> String:
+    # exascript_info: field 4 = source_code (the CREATE SCRIPT body). Carries the
+    # optional `%udf_object <path>` directive that selects a BucketFS .so.
+    var src = String("")
+    var sp = r.pos; var se = r.end
+    r.pos = s; r.end = e
+    while not r.at_end():
+        var t = r.read_tag()
+        if t[0] == 4 and t[1] == WIRE_LEN: src = r.read_string()
+        else: r.skip(t[1])
+    r.pos = sp; r.end = se
+    return src
 
 fn decode_meta_into(mut r: Reader, s: Int, e: Int, mut resp: Response) raises:
     # exascript_metadata: 1 input_iter, 2 output_iter, 3 input_columns,

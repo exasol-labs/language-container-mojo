@@ -129,6 +129,16 @@ RUN set -eu; \
     ldconfig -r /slc || true; \
     echo "bundled CPython $PYVER ($SONAME) + stdlib into the SLC"
 
+# Build the example dynamic-UDF shared object (the extension path). It is built
+# here (where the Mojo toolchain lives) but deliberately NOT staged into /slc —
+# it must not ship in the artifact tarball, since `buckets/` is an empty sandbox
+# mount point (asserted by the tarball contract test). The selftest stage copies
+# it into its own throwaway chroot to exercise %udf_object loading.
+COPY examples/udf_so/ /build/examples/udf_so/
+RUN mojo build --emit shared-lib /build/examples/udf_so/double_ext.mojo \
+        -o /build/double_ext.so \
+    && test -s /build/double_ext.so
+
 # ── Stage 2: packager ─────────────────────────────────────────────────────────
 # A clean slim base: only packages the pre-assembled rootfs, proves it loads, tars.
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS staging
@@ -165,6 +175,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /slc /slc
 COPY test/fake_exasol.py /fake_exasol.py
+# The example .so goes into THIS chroot only (not the shipped tarball) so the
+# selftest can exercise the dynamic %udf_object load path.
+COPY --from=builder /build/double_ext.so /slc/buckets/double_ext.so
 # Exercise every UDF/wire combination the container supports: DOUBLE_MOJO
 # (scalar) and SUM_POSITIVE (set) over the INT64 block, DOUBLE_MOJO over the
 # NUMERIC/string block, and PY_SCALE (Python interop). Each case runs the real
@@ -205,6 +218,8 @@ RUN set -u; \
     run_case --splits 3; \
     run_case --sum --splits 2; \
     run_case --emit; \
+    echo "--- dynamic .so extension path (%udf_object) ---"; \
+    run_case --udfobject /buckets/double_ext.so; \
     echo "--- SQL datatype compatibility matrix ---"; \
     run_case --coltype BIGINT; \
     run_case --coltype INTEGER; \

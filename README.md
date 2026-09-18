@@ -382,6 +382,43 @@ resolves. Your own modules go in `python/` (shipped to `/opt/pypkgs` too).
 > Python interop trades performance for library access — use it where the Python
 > ecosystem earns its keep.
 
+## Dynamic UDFs via shared objects (extension, no rebuild)
+
+By default a UDF is compiled **into** `mojoudfclient`, so adding one means
+rebuilding and redeploying the container. As an **opt-in extension**, you can
+instead compile a UDF to a shared object, upload it to BucketFS, and point a
+script at it with a `%udf_object` line — the container `dlopen`s it at run time
+(analogous to the Rust SLC's `.so` model). Scripts *without* `%udf_object` keep
+using the baked-in UDFs, so this adds a path, it doesn't change the default.
+
+```mojo
+# examples/udf_so/double_ext.mojo — exports the C ABI in src/loader.mojo
+@export
+fn __exa_udf_entry_DOUBLE_EXT(in_vals: UnsafePointer[Int64], in_nulls: UnsafePointer[Bool],
+        n_in: Int64, out_vals: UnsafePointer[UnsafePointer[Int64]],
+        out_nulls: UnsafePointer[UnsafePointer[Bool]]) -> Int64:
+    ...   # allocate the output, return its row count (SET reduces, EMITS expands)
+```
+
+```bash
+mojo build --emit shared-lib examples/udf_so/double_ext.mojo -o double_ext.so
+# upload double_ext.so to BucketFS (curl, like section 4b), then:
+```
+
+```sql
+CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_EXT(val BIGINT) RETURNS BIGINT AS
+%udf_object /buckets/bfsdefault/default/udfs/double_ext.so
+/
+```
+
+Hybrid Mojo+Python works here too: a `.so` that calls `Python.import_module`
+reuses the CPython runtime bundled in the container (the `.so` ships no Python).
+Two constraints: the `.so` must be built with the **same Mojo toolchain** as the
+container (the host checks an ABI version and refuses a mismatch), and any extra
+Python packages it imports must be on `PYTHONPATH` (bundled, or uploaded too).
+See [`src/loader.mojo`](src/loader.mojo) for the ABI and
+[`examples/udf_so/`](examples/udf_so/) for the template.
+
 ## Diagnosing a live run
 
 If a live `SELECT DOUBLE_MOJO(21)` returns an empty set or `22002 VM crashed`, build

@@ -6,6 +6,7 @@
 # UNVERIFIED Mojo. The control flow mirrors dispatch.rs / loop_.rs exactly
 # (see ../DESIGN.md, "Run loop"). Build/deploy: ../build.md.
 
+from collections import Optional
 from sys import argv
 from sys.ffi import external_call
 from zmq import ZmqReq
@@ -16,6 +17,47 @@ from wire import (
     MT_FINISHED, MT_PING_PONG, PB_INT64,
 )
 from udf import run_udf, is_known
+from loader import load_udf, LoadedUdf
+
+
+# Extract the path from a `%udf_object <path>` line in the script source, or ""
+# if absent. A byte-level scan (no String slicing/regex): find the directive at a
+# line start, skip leading blanks, then read the path token up to the first
+# whitespace, ';', or newline. Mirrors the Rust SLC's artifact.rs directive.
+fn parse_udf_object(source: String) -> String:
+    var b = source.as_bytes()
+    var n = len(b)
+    var key = String("%udf_object")
+    var kb = key.as_bytes()
+    var kn = len(kb)
+    var i = 0
+    while i < n:
+        var j = i
+        while j < n and (Int(b[j]) == 32 or Int(b[j]) == 9):   # skip indent
+            j += 1
+        var matched = (j + kn) <= n
+        if matched:
+            for k in range(kn):
+                if b[j + k] != kb[k]:
+                    matched = False
+                    break
+        if matched:
+            var p = j + kn
+            while p < n and (Int(b[p]) == 32 or Int(b[p]) == 9):
+                p += 1
+            var path = String("")
+            while p < n:
+                var c = Int(b[p])
+                if c == 10 or c == 13 or c == 59 or c == 32 or c == 9:  # \n \r ; space tab
+                    break
+                path += chr(c)
+                p += 1
+            if len(path) > 0:
+                return path^
+        while i < n and Int(b[i]) != 10:      # advance to next line
+            i += 1
+        i += 1
+    return String("")
 
 # Terminate the process with an explicit code (a returning main() exits 0, but a
 # UDF client must signal errors non-zero). Uses libc exit — always available.
@@ -72,6 +114,7 @@ fn main() raises:
     sock.send(enc_client(conn_id, endpoint))
 
     var script_name = String("")
+    var so_path = String("")                # from %udf_object in the script source
     var input_cols = List[ColumnDef]()      # from MT_META; held for the run loop
     var output_cols = List[ColumnDef]()     # determines the emit block
     var have_meta = False
@@ -82,16 +125,29 @@ fn main() raises:
             sock.send(enc_ping_reply(conn_id, resp.ping_meta))
         elif resp.mt == MT_INFO:
             script_name = resp.script_name
+            so_path = parse_udf_object(resp.source_code)   # optional dynamic .so
             sock.send(enc_bare(MT_META, conn_id))     # ask for column metadata
         elif resp.mt == MT_META:
             input_cols = resp.input_cols.copy()       # 1 col (BIGINT) for double
             output_cols = resp.output_cols.copy()     # 1 col (BIGINT) for double
-            if not is_known(script_name):
+            # A script is valid if it names a baked-in UDF OR points at a .so.
+            if not is_known(script_name) and len(so_path) == 0:
                 fail(sock, conn_id, "unknown script '" + script_name + "'")
                 return
             have_meta = True
         else:
             fail(sock, conn_id, "unexpected message " + String(resp.mt) + " during handshake")
+            return
+
+    # If the script carries `%udf_object`, load that .so now (extension path);
+    # any load/ABI failure is a clean MT_CLOSE. Otherwise `loaded` stays empty and
+    # the run loop uses the baked-in run_udf() (fallback).
+    var loaded = Optional[LoadedUdf](None)
+    if len(so_path) > 0:
+        try:
+            loaded = Optional[LoadedUdf](load_udf(so_path, script_name))
+        except e:
+            fail(sock, conn_id, "loading udf .so for '" + script_name + "': " + String(e))
             return
 
     # ---- run loop -----------------------------------------------------------
@@ -132,7 +188,9 @@ fn main() raises:
                 for i in range(len(col[0])):
                     in_vals.append(col[0][i]); in_nulls.append(col[1][i])
 
-            var res = run_udf(script_name, in_vals, in_nulls)
+            # Dynamic .so (extension) if one was loaded, else baked-in (fallback).
+            var res = loaded.value().run(in_vals, in_nulls) if loaded \
+                else run_udf(script_name, in_vals, in_nulls)
             if len(res[0]) > 0:
                 var out_type = output_cols[0].col_type if len(output_cols) > 0 else PB_INT64
                 sock.send(enc_emit_i64(conn_id, out_type, res[0], res[1]))

@@ -52,3 +52,20 @@ EMITS (res BIGINT) AS
 /
 
 SELECT MIRROR_MOJO(val) FROM (VALUES 10, -5, 7) t(val);   -- 10,-10, -5,5, 7,-7
+
+-- ── Dynamic UDF via a shared object (EXTENSION path, no container rebuild) ─────
+-- Instead of baking the UDF into mojoudfclient, compile it to a .so, upload it
+-- to BucketFS, and select it with a `%udf_object <path>` line in the script body.
+-- The container dlopens the .so at run time; scripts WITHOUT %udf_object keep
+-- using the baked-in UDFs above (fallback). See examples/udf_so/double_ext.mojo.
+--
+--   mojo build --emit shared-lib examples/udf_so/double_ext.mojo -o double_ext.so
+--   # upload double_ext.so to bfsdefault/default/udfs/ (curl, like section 4b)
+--
+-- The script name must match the .so's exported entry (__exa_udf_entry_DOUBLE_EXT):
+CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_EXT(val BIGINT)
+RETURNS BIGINT AS
+%udf_object /buckets/bfsdefault/default/udfs/double_ext.so
+/
+
+SELECT DOUBLE_EXT(val) FROM (VALUES 10, 21, -5) t(val);   -- 20, 42, -10

@@ -168,8 +168,10 @@ def close_message(buf):
 
 # ---- messages the DB sends ------------------------------------------------
 
-def m_info(script="DOUBLE"):
-    info = f_string(3, script)  # exascript_info.script_name; other fields omitted
+def m_info(script="DOUBLE", source=""):
+    info = f_string(3, script)          # exascript_info.script_name (field 3)
+    if source:
+        info += f_string(4, source)     # exascript_info.source_code (field 4)
     return envelope(MT_INFO, f_len(4, info))
 
 def m_meta(col_type=PB_INT64, out_type=None):
@@ -254,12 +256,17 @@ MTN = {1: "CLIENT", 2: "INFO", 3: "META", 6: "NEXT", 8: "EMIT", 9: "RUN",
        10: "DONE", 11: "CLEANUP", 12: "FINISHED", 13: "PING"}
 
 def run(bind, values, numeric=False, sum_mode=False, py_mode=False,
-        emit_mode=False, splits=1):
+        emit_mode=False, splits=1, udf_object="", script_override=""):
     ctx = zmq.Context()
     sock = ctx.socket(zmq.REP)
     sock.setsockopt(zmq.RCVTIMEO, 20000)   # 20s: headroom for slow (cold x86 CI) starts
     sock.bind(bind)
-    if py_mode:                                    # PY_SCALE: Python interop, v*10
+    source = ""
+    if udf_object:                                 # dynamic .so via %udf_object
+        script = script_override if script_override else "DOUBLE_EXT"
+        expected = [v * 2 for v in values]         # the double_ext.so template doubles
+        source = "%udf_object " + udf_object
+    elif py_mode:                                  # PY_SCALE: Python interop, v*10
         script = "PY_SCALE"; expected = [v * 10 for v in values]
     elif sum_mode:
         script = "SUM_POSITIVE"; expected = [sum(v for v in values if v > 0)]
@@ -289,7 +296,7 @@ def run(bind, values, numeric=False, sum_mode=False, py_mode=False,
 
     batches = chunk(values, splits)
 
-    step(MT_CLIENT);   sock.send(m_info(script))
+    step(MT_CLIENT);   sock.send(m_info(script, source))
     step(MT_META);     sock.send(m_meta(PB_NUMERIC if numeric else PB_INT64))
     step(MT_RUN);      sock.send(bare(MT_RUN))     # open group
     for b in batches:                              # one MT_NEXT per input batch
@@ -433,13 +440,21 @@ def main():
                          "Exasol column type (BIGINT, INTEGER, DECIMAL, DOUBLE, "
                          "BOOLEAN, VARCHAR, DATE, TIMESTAMP) and assert the "
                          "container converts or refuses it per the contract")
+    ap.add_argument("--udfobject",
+                    help="send a script whose source has '%%udf_object <path>' so "
+                         "the container loads a dynamic .so instead of a baked-in "
+                         "UDF (the double_ext.so template doubles its input)")
+    ap.add_argument("--script", default="",
+                    help="script name to send (entry symbol the .so must export); "
+                         "defaults to DOUBLE_EXT with --udfobject")
     ap.add_argument("--values", default="10,21,-5,0,7")
     args = ap.parse_args()
     if args.coltype:
         sys.exit(run_coltype(args.bind, args.coltype))
     values = [int(x) for x in args.values.split(",")]
     sys.exit(run(args.bind, values, numeric=args.numeric, sum_mode=args.sum,
-                 py_mode=args.pyscale, emit_mode=args.emit, splits=args.splits))
+                 py_mode=args.pyscale, emit_mode=args.emit, splits=args.splits,
+                 udf_object=args.udfobject or "", script_override=args.script))
 
 if __name__ == "__main__":
     main()
