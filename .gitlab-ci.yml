@@ -10,11 +10,12 @@ stages: [lint, security, test]
 
 variables:
   GIT_DEPTH: "20"          # shallow clone is fine; gitleaks scans files (--no-git)
+  DOCKER_BUILDKIT: "1"     # --output type=local (tarball job) needs BuildKit
 
 shellcheck:
   stage: lint
   script:
-    - docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable install-native.sh
+    - docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable install-native.sh test/language_definitions_test.sh test/language_definitions_fixtures_test.sh test/slc_tarball_test.sh
 
 hadolint:
   stage: lint
@@ -47,9 +48,45 @@ dep-audit:
         echo "requirements.txt has no packages — nothing to audit"
       fi
 
+contracts:
+  stage: test
+  # language-definitions shape check on the committed document + fixtures driver
+  # (one fixture per defect class proves each assertion discriminates).
+  script:
+    - |
+      docker run --rm -v "$PWD:/w" -w /w debian:trixie-slim bash -c '
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends jq >/dev/null
+        bash test/language_definitions_test.sh build_info/language_definitions.json
+        bash test/language_definitions_fixtures_test.sh
+      '
+
+unit-tests:
+  stage: test
+  # Pure codec unit tests (src/proto.mojo + src/wire.mojo), compiled and run in
+  # the Mojo builder image (the analogue of the Rust SLC's per-module unit tests).
+  script:
+    - docker build -f Dockerfile --target unittest --progress=plain .
+
 selftest:
   stage: test
   # Builds the SLC (Mojo + bundled CPython) and drives the real binary through
-  # the full protocol matrix (DOUBLE_MOJO int64+NUMERIC, SUM_POSITIVE, PY_SCALE).
+  # the full protocol matrix (DOUBLE_MOJO int64+NUMERIC, SUM_POSITIVE, PY_SCALE)
+  # plus multi-batch accumulation (--splits).
   script:
     - docker build -f Dockerfile --target selftest --progress=plain .
+
+tarball:
+  stage: test
+  # Build the shippable SLC tarball and assert the extracted rootfs satisfies the
+  # sandbox contract (mirrors the Rust SLC's slc_tarball_test.sh).
+  script:
+    - mkdir -p out-lc
+    - docker build -f Dockerfile --target artifact --output type=local,dest=out-lc .
+    - |
+      docker run --rm -v "$PWD:/w" -w /w debian:trixie-slim bash -c '
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends binutils jq >/dev/null
+        bash test/slc_tarball_test.sh out-lc/mojo-slc.tar.gz
+      '
+  artifacts:
+    paths: [out-lc/mojo-slc.tar.gz]
+    expire_in: 1 day

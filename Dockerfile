@@ -193,7 +193,20 @@ RUN set -u; \
     run_case --sum; \
     run_case --numeric; \
     run_case --pyscale; \
+    run_case --splits 3; \
+    run_case --sum --splits 2; \
     echo "=== ALL SELFTEST CASES PASSED ==="
+
+# ── Stage: unittest — pure codec unit tests (no ZMQ, no Exasol) ───────────────
+# The Mojo analogue of the Rust SLC's per-module *_tests.rs. Compiled and run in
+# the builder image (which has the Mojo toolchain + src/), so a codec regression
+# fails the build before the protocol self-test would.
+#   docker build -f Dockerfile --target unittest .
+FROM builder AS unittest
+COPY test/mojo/ /build/test/mojo/
+RUN set -eu; \
+    mojo build /build/test/mojo/test_codec.mojo -o /build/test_codec -I /build/src; \
+    /build/test_codec
 
 # ── Stage 3: artifact ─────────────────────────────────────────────────────────
 FROM scratch AS artifact

@@ -19,7 +19,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck
-          shellcheck install-native.sh
+          shellcheck install-native.sh test/*.sh
 
       - name: hadolint (Dockerfile)
         # Run via the pinned Docker image (not a Node action), so it is unaffected
@@ -58,6 +58,31 @@ jobs:
             ghcr.io/gitleaks/gitleaks:v8.18.4 \
             detect --source /repo --no-git --no-banner --redact
 
+  # Contract tests for the language-definitions metadata: the shape check on the
+  # committed document, plus the fixtures driver that proves each assertion
+  # discriminates (one fixture per defect class). Pure bash + jq, no build.
+  contracts:
+    name: Contract tests (language definitions)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+      - name: Language-definitions shape check (committed document)
+        run: bash test/language_definitions_test.sh build_info/language_definitions.json
+      - name: Language-definitions fixtures (each defect discriminated)
+        run: bash test/language_definitions_fixtures_test.sh
+
+  # Pure codec unit tests (src/proto.mojo + src/wire.mojo), compiled and run in
+  # the Mojo builder image — the analogue of the Rust SLC's per-module unit tests.
+  unit-tests:
+    name: Unit tests (Mojo codec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: docker build --target unittest
+        run: docker build -f Dockerfile --target unittest --progress=plain .
+
   selftest:
     name: Build SLC + protocol self-test
     runs-on: ubuntu-latest
@@ -65,6 +90,32 @@ jobs:
       - uses: actions/checkout@v5
       # Builds the container (Mojo + bundled CPython) and drives the real binary
       # through the full ZMQ/protobuf exchange for every UDF/wire combination
-      # (DOUBLE_MOJO int64 + NUMERIC, SUM_POSITIVE, PY_SCALE). Fails on any divergence.
+      # (DOUBLE_MOJO int64 + NUMERIC, SUM_POSITIVE, PY_SCALE) plus multi-batch
+      # accumulation (--splits). Fails on any divergence.
       - name: docker build --target selftest
         run: docker build -f Dockerfile --target selftest --progress=plain .
+
+  # Build the shippable SLC tarball and assert the extracted rootfs satisfies the
+  # sandbox contract (client present/executable, DT_NEEDED closure resolves,
+  # bundled CPython staged, skeleton mount points, size ceiling, metadata
+  # byte-identical to source). Mirrors the Rust SLC's slc_tarball_test.sh.
+  tarball:
+    name: Build SLC tarball + contract test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install binutils + jq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends binutils jq
+      - name: Build SLC tarball (--target artifact)
+        run: |
+          mkdir -p /tmp/lc-out
+          docker build -f Dockerfile --target artifact \
+            --output type=local,dest=/tmp/lc-out .
+      - name: SLC tarball contract test
+        run: bash test/slc_tarball_test.sh /tmp/lc-out/mojo-slc.tar.gz
+      - name: Upload SLC tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: mojo-slc-tarball
+          path: /tmp/lc-out/mojo-slc.tar.gz
+          if-no-files-found: error

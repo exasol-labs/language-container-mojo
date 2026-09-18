@@ -193,12 +193,27 @@ def m_next_str(values):
 def bare(mt):
     return envelope(mt)
 
+# ---- input chunking (multi-batch tests) -----------------------------------
+
+def chunk(values, splits):
+    """Split values into `splits` non-empty, contiguous chunks (fewer if short).
+
+    Exercises the container's run loop, which requests MT_NEXT repeatedly and
+    accumulates every batch's rows into the group until MT_DONE. splits=1 sends
+    the whole group in one batch (the original behaviour)."""
+    if splits <= 1 or len(values) <= 1:
+        return [list(values)]
+    splits = min(splits, len(values))
+    size = (len(values) + splits - 1) // splits  # ceil, so no trailing empties
+    out = [values[i:i + size] for i in range(0, len(values), size)]
+    return [c for c in out if c]
+
 # ---- the scripted DB session ----------------------------------------------
 
 MTN = {1: "CLIENT", 2: "INFO", 3: "META", 6: "NEXT", 8: "EMIT", 9: "RUN",
        10: "DONE", 11: "CLEANUP", 12: "FINISHED", 13: "PING"}
 
-def run(bind, values, numeric=False, sum_mode=False, py_mode=False):
+def run(bind, values, numeric=False, sum_mode=False, py_mode=False, splits=1):
     ctx = zmq.Context()
     sock = ctx.socket(zmq.REP)
     sock.setsockopt(zmq.RCVTIMEO, 10000)   # 10s: fail loudly instead of hanging
@@ -228,11 +243,16 @@ def run(bind, values, numeric=False, sum_mode=False, py_mode=False):
             sys.exit(3)
         return got
 
+    batches = chunk(values, splits)
+
     step(MT_CLIENT);   sock.send(m_info(script))
     step(MT_META);     sock.send(m_meta(PB_NUMERIC if numeric else PB_INT64))
     step(MT_RUN);      sock.send(bare(MT_RUN))     # open group
-    step(MT_NEXT);     sock.send(m_next_str(values) if numeric else m_next(values))
+    for b in batches:                              # one MT_NEXT per input batch
+        step(MT_NEXT); sock.send(m_next_str(b) if numeric else m_next(b))
     step(MT_NEXT);     sock.send(bare(MT_DONE))    # input exhausted
+    if len(batches) > 1:
+        print("  (input sent in %d batches: %s)" % (len(batches), batches), flush=True)
     emit = step(MT_EMIT); sock.send(bare(MT_EMIT)) # ack
     got = emit_strings(emit) if numeric else emit_int64s(emit)
     step(MT_DONE);     sock.send(bare(MT_DONE))
@@ -256,11 +276,14 @@ def main():
                     help="drive SUM_POSITIVE (SET) instead of DOUBLE (scalar)")
     ap.add_argument("--pyscale", action="store_true",
                     help="drive PY_SCALE (Python-interop scalar, v*10)")
+    ap.add_argument("--splits", type=int, default=1,
+                    help="send the group's rows across N MT_NEXT batches "
+                         "(tests the run loop's batch accumulation)")
     ap.add_argument("--values", default="10,21,-5,0,7")
     args = ap.parse_args()
     values = [int(x) for x in args.values.split(",")]
     sys.exit(run(args.bind, values, numeric=args.numeric, sum_mode=args.sum,
-                 py_mode=args.pyscale))
+                 py_mode=args.pyscale, splits=args.splits))
 
 if __name__ == "__main__":
     main()
