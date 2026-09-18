@@ -44,8 +44,9 @@ SCRIPTS = {
                     "RETURNS BIGINT AS\n-- native client dispatches by name\n",
     "PY_SCALE":     "CREATE OR REPLACE MOJO SCALAR SCRIPT PY_SCALE(val BIGINT)\n"
                     "RETURNS BIGINT AS\n-- native client dispatches by name\n",
+    # EMITS column is RES, not OUT — OUT is a reserved keyword in Exasol.
     "MIRROR_MOJO":  "CREATE OR REPLACE MOJO SCALAR SCRIPT MIRROR_MOJO(val BIGINT)\n"
-                    "EMITS (out BIGINT) AS\n-- native client dispatches by name\n",
+                    "EMITS (res BIGINT) AS\n-- native client dispatches by name\n",
 }
 
 
@@ -72,8 +73,14 @@ def activate_language():
     c.close()
 
 
+def as_int(v):
+    # Exasol BIGINT/DECIMAL come back through pyexasol as str/Decimal; normalise
+    # to a Python int (preserving NULL as None) so value assertions are exact.
+    return None if v is None else int(v)
+
+
 def fetch_scalar(c, sql):
-    return c.execute(sql).fetchone()[0]
+    return as_int(c.execute(sql).fetchone()[0])
 
 
 def run_checks(c):
@@ -103,12 +110,12 @@ def run_checks(c):
           38)
 
     # SCALAR via Python interop
-    pyscale = sorted(r[0] for r in c.execute(
+    pyscale = sorted(as_int(r[0]) for r in c.execute(
         "SELECT PY_SCALE(val) FROM (VALUES 10,21,-5,0,7) t(val)").fetchall())
     check("PY_SCALE set", pyscale, sorted([100, 210, -50, 0, 70]))
 
     # EMITS (one-to-many): 3 input rows -> 6 output rows
-    mirror = sorted(r[0] for r in c.execute(
+    mirror = sorted(as_int(r[0]) for r in c.execute(
         "SELECT MIRROR_MOJO(val) FROM (VALUES 10,-5,7) t(val)").fetchall())
     check("MIRROR_MOJO emits", mirror, sorted([10, -10, -5, 5, 7, -7]))
 

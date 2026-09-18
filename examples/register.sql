@@ -45,8 +45,9 @@ SELECT PY_SCALE(val) FROM (VALUES 10, 21, -5, 0, 7) t(val);   -- 100, 210, -50, 
 -- SCALAR EMITS (one-to-many): MIRROR_MOJO emits TWO rows per input row — the
 -- value and its negation — so N input rows produce 2*N output rows. Uses EMITS
 -- (a result table) instead of RETURNS (a single value).
+-- NB: the EMITS column is named RES, not OUT — OUT is a reserved keyword in Exasol.
 CREATE OR REPLACE MOJO SCALAR SCRIPT MIRROR_MOJO(val BIGINT)
-EMITS (out BIGINT) AS
+EMITS (res BIGINT) AS
 -- native client dispatches by script name; body ignored
 /
 
