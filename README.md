@@ -405,6 +405,23 @@ MOJO-DIAG script=DOUBLE_MOJO in_iter=1 single=0 in_types=[..] out_types=[..] | R
 …); `i64=`/`str=` show which block the input value used. That tells you whether the
 container must read/emit the NUMERIC/string block instead of `data_int64`.
 
+## Testing
+
+The suite is modelled on the Rust SLC's and has five offline layers plus a live
+E2E, each wired into CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml),
+[`.gitlab-ci.yml`](.gitlab-ci.yml)). Run everything with `make test` (or
+`bash test/run-all.sh`); see [`TESTING.md`](TESTING.md) for how to run each layer
+by hand.
+
+| Layer | What it proves | Files | How it runs |
+|-------|----------------|-------|-------------|
+| **Codec unit tests** | The pure protobuf/wire functions (varint, int reinterpret, packed repeated, length-prefix bounds, decimal parsing, block mapping) are correct in isolation. Analogue of the Rust SLC's per-module `*_tests.rs`. | [`test/mojo/test_codec.mojo`](test/mojo/test_codec.mojo) | `make unittest` |
+| **Protocol self-test** | The real `mojoudfclient` binary speaks the full ZMQ + protobuf `MT_*` exchange for every UDF/wire combination, incl. multi-batch accumulation. Covers all three UDF shapes: **SCALAR** (`DOUBLE_MOJO`, `PY_SCALE`), **SET** (`SUM_POSITIVE`), **EMITS** one-to-many (`MIRROR_MOJO`). | [`test/fake_exasol.py`](test/fake_exasol.py) | `make selftest` |
+| **Datatype compatibility** | Every Exasol SQL column type is driven through the real binary and asserted to convert correctly or be refused with a precise `MT_CLOSE` — the contract of which SQL types map to a Mojo `Int64`. | [`test/fake_exasol.py`](test/fake_exasol.py) (`--coltype`) | `make selftest` |
+| **Tarball contract** | The shipped SLC rootfs satisfies the sandbox contract: client present/executable and arch-matched, DT_NEEDED closure resolvable, bundled CPython staged, skeleton mount points, size ceiling, metadata byte-identical. Ported from `dist/tests/slc_tarball_test.sh`. | [`test/slc_tarball_test.sh`](test/slc_tarball_test.sh) | `make tarball` |
+| **Language-definitions contract** | `build_info/language_definitions.json` conforms to the Exasol v2 metadata schema (aliases `MOJO`, `lang=mojo`, `localzmq+protobuf`, `/exaudf/mojoudfclient`, no legacy keys). One fixture per defect class proves each assertion discriminates. | [`test/language_definitions_test.sh`](test/language_definitions_test.sh), [`…_fixtures_test.sh`](test/language_definitions_fixtures_test.sh), [`fixtures/`](test/fixtures/language_definitions/) | `make contracts` |
+| **E2E (real Exasol)** | The SLC deployed into a real Exasol, MOJO activated, and every UDF (SCALAR / SET / EMITS + INTEGER/DECIMAL inputs) exercised through actual SQL. Analogue of the Rust SLC's `it/db_roundtrip`. | [`test/e2e/e2e_test.py`](test/e2e/e2e_test.py) (pyexasol) | [`e2e.yml`](.github/workflows/e2e.yml) (GitHub x86_64) |
+
 ## Repository layout
 
 The whole repo is the language container — everything is Mojo, no Rust.
