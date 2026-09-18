@@ -195,6 +195,7 @@ RUN set -u; \
     run_case --pyscale; \
     run_case --splits 3; \
     run_case --sum --splits 2; \
+    run_case --emit; \
     echo "--- SQL datatype compatibility matrix ---"; \
     run_case --coltype BIGINT; \
     run_case --coltype INTEGER; \

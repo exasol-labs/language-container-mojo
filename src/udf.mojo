@@ -51,6 +51,22 @@ fn run_py_scale(values: List[Int64], nulls: List[Bool]) raises -> (List[Int64], 
             out.append(Int(r)); out_nulls.append(False)
     return (out^, out_nulls^)
 
+# mirror_mojo(val BIGINT) EMITS (out BIGINT) — SCALAR EMITS: a one-to-many UDF.
+# For each non-null input row it emits TWO output rows (the value and its
+# negation), so the output has 2x the rows of the input. This is the EMITS
+# (table-returning) contract — the emit path in main.mojo already sends every
+# output row as one MT_EMIT, so a UDF is EMITS simply by returning more (or
+# fewer) rows than it received. NULL inputs emit nothing (variable fan-out).
+fn run_mirror_mojo(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
+    var out = List[Int64]()
+    var out_nulls = List[Bool]()
+    for i in range(len(values)):
+        if nulls[i]:
+            continue                       # a null input emits zero rows
+        out.append(values[i]); out_nulls.append(False)      # row 1: the value
+        out.append(-values[i]); out_nulls.append(False)     # row 2: its negation
+    return (out^, out_nulls^)
+
 # Dispatch on the SQL script name the DB sent in MT_INFO (already UPPER-cased by
 # Exasol). `raises` because a Python-backed UDF may raise.
 fn run_udf(name: String, values: List[Int64], nulls: List[Bool]) raises -> (List[Int64], List[Bool]):
@@ -58,7 +74,10 @@ fn run_udf(name: String, values: List[Int64], nulls: List[Bool]) raises -> (List
         return run_sum_positive(values, nulls)
     if name == "PY_SCALE":
         return run_py_scale(values, nulls)
+    if name == "MIRROR_MOJO":
+        return run_mirror_mojo(values, nulls)
     return run_double_mojo(values, nulls)   # DOUBLE_MOJO (default)
 
 fn is_known(name: String) -> Bool:
-    return name == "DOUBLE_MOJO" or name == "SUM_POSITIVE" or name == "PY_SCALE"
+    return (name == "DOUBLE_MOJO" or name == "SUM_POSITIVE"
+            or name == "PY_SCALE" or name == "MIRROR_MOJO")

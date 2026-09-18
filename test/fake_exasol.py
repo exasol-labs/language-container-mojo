@@ -253,7 +253,8 @@ def chunk(values, splits):
 MTN = {1: "CLIENT", 2: "INFO", 3: "META", 6: "NEXT", 8: "EMIT", 9: "RUN",
        10: "DONE", 11: "CLEANUP", 12: "FINISHED", 13: "PING"}
 
-def run(bind, values, numeric=False, sum_mode=False, py_mode=False, splits=1):
+def run(bind, values, numeric=False, sum_mode=False, py_mode=False,
+        emit_mode=False, splits=1):
     ctx = zmq.Context()
     sock = ctx.socket(zmq.REP)
     sock.setsockopt(zmq.RCVTIMEO, 10000)   # 10s: fail loudly instead of hanging
@@ -262,6 +263,9 @@ def run(bind, values, numeric=False, sum_mode=False, py_mode=False, splits=1):
         script = "PY_SCALE"; expected = [v * 10 for v in values]
     elif sum_mode:
         script = "SUM_POSITIVE"; expected = [sum(v for v in values if v > 0)]
+    elif emit_mode:                                # MIRROR_MOJO: EMITS 2 rows/input
+        script = "MIRROR_MOJO"
+        expected = [x for v in values for x in (v, -v)]
     else:
         script = "DOUBLE_MOJO"; expected = [v * 2 for v in values]
 
@@ -418,6 +422,9 @@ def main():
                     help="drive SUM_POSITIVE (SET) instead of DOUBLE (scalar)")
     ap.add_argument("--pyscale", action="store_true",
                     help="drive PY_SCALE (Python-interop scalar, v*10)")
+    ap.add_argument("--emit", action="store_true",
+                    help="drive MIRROR_MOJO (SCALAR EMITS one-to-many: each input "
+                         "row emits two rows, v and -v)")
     ap.add_argument("--splits", type=int, default=1,
                     help="send the group's rows across N MT_NEXT batches "
                          "(tests the run loop's batch accumulation)")
@@ -432,7 +439,7 @@ def main():
         sys.exit(run_coltype(args.bind, args.coltype))
     values = [int(x) for x in args.values.split(",")]
     sys.exit(run(args.bind, values, numeric=args.numeric, sum_mode=args.sum,
-                 py_mode=args.pyscale, splits=args.splits))
+                 py_mode=args.pyscale, emit_mode=args.emit, splits=args.splits))
 
 if __name__ == "__main__":
     main()
