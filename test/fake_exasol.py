@@ -18,8 +18,15 @@ import zmq
 # message_type
 MT_CLIENT, MT_INFO, MT_META, MT_CLOSE = 1, 2, 3, 4
 MT_NEXT, MT_EMIT, MT_RUN, MT_DONE, MT_CLEANUP, MT_FINISHED = 6, 8, 9, 10, 11, 12
+# column_type (zmqcontainer.proto)
+PB_DOUBLE = 1
+PB_INT32 = 2
 PB_INT64 = 3
 PB_NUMERIC = 4
+PB_TIMESTAMP = 5
+PB_DATE = 6
+PB_STRING = 7
+PB_BOOLEAN = 8
 CONN = 1  # connection_id the DB assigns
 
 # ---- protobuf writing -----------------------------------------------------
@@ -165,13 +172,19 @@ def m_info(script="DOUBLE"):
     info = f_string(3, script)  # exascript_info.script_name; other fields omitted
     return envelope(MT_INFO, f_len(4, info))
 
-def m_meta(col_type=PB_INT64):
-    col = lambda name: f_string(1, name) + f_varint(2, col_type)
-    meta = (f_varint(1, 1)          # input_iter_type = PB_EXACTLY_ONCE
-            + f_varint(2, 1)         # output_iter_type = PB_EXACTLY_ONCE
-            + f_len(3, col("val"))   # input_columns[0]
-            + f_len(4, col("out"))   # output_columns[0]
-            + f_varint(5, 0))        # single_call_mode = false
+def m_meta(col_type=PB_INT64, out_type=None):
+    """MT_META with one input column (col_type) and one output column.
+
+    out_type defaults to col_type; the datatype-matrix tests pin the output to
+    BIGINT so an accepted input always emits through the INT64 block."""
+    if out_type is None:
+        out_type = col_type
+    col = lambda name, t: f_string(1, name) + f_varint(2, t)
+    meta = (f_varint(1, 1)                 # input_iter_type = PB_EXACTLY_ONCE
+            + f_varint(2, 1)                # output_iter_type = PB_EXACTLY_ONCE
+            + f_len(3, col("val", col_type))    # input_columns[0]
+            + f_len(4, col("out", out_type))    # output_columns[0]
+            + f_varint(5, 0))               # single_call_mode = false
     return envelope(MT_META, f_len(5, meta))
 
 def m_next(values):
@@ -182,6 +195,15 @@ def m_next(values):
              + f_len(6, packed_i64(values)))# data_int64
     return envelope(MT_NEXT, f_len(8, f_len(2, table)))
 
+def m_next_i32(values):
+    """Send the input in the data_int32 (INTEGER) block (field 5)."""
+    nulls = packed_bool([False] * len(values))
+    table = (f_varint(1, len(values))       # rows
+             + f_varint(8, len(values))     # rows_in_group
+             + f_len(3, nulls)              # data_nulls
+             + f_len(5, packed_i64(values)))# data_int32 (packed)
+    return envelope(MT_NEXT, f_len(8, f_len(2, table)))
+
 def m_next_str(values):
     """Send the input in the data_string (NUMERIC/DECIMAL) block, as decimal text."""
     nulls = packed_bool([False] * len(values))
@@ -189,6 +211,24 @@ def m_next_str(values):
     for v in values:                        # data_string: one repeated entry per row
         body += f_string(2, str(v))
     return envelope(MT_NEXT, f_len(8, f_len(2, body)))
+
+def m_next_strings(texts):
+    """Send arbitrary text rows in the data_string block (for VARCHAR/DATE/TS)."""
+    nulls = packed_bool([False] * len(texts))
+    body = f_varint(1, len(texts)) + f_varint(8, len(texts)) + f_len(3, nulls)
+    for t in texts:
+        body += f_string(2, t)
+    return envelope(MT_NEXT, f_len(8, f_len(2, body)))
+
+def m_next_rows_only(n):
+    """A batch with rows + non-null flags but no typed data block.
+
+    Used for column types the container rejects before it reads any cell data
+    (DOUBLE, BOOLEAN → 'not integer-convertible'): column_i64 sees a non-null
+    cell in a block it will not convert and raises immediately."""
+    nulls = packed_bool([False] * n)
+    table = f_varint(1, n) + f_varint(8, n) + f_len(3, nulls)
+    return envelope(MT_NEXT, f_len(8, f_len(2, table)))
 
 def bare(mt):
     return envelope(mt)
@@ -266,6 +306,108 @@ def run(bind, values, numeric=False, sum_mode=False, py_mode=False, splits=1):
           file=sys.stderr)
     return 1
 
+# ---- SQL datatype compatibility matrix ------------------------------------
+# For each Exasol column type: the protobuf column_type, how a one-row input
+# batch is encoded, and the expected container behaviour — either it converts
+# the cell (script DOUBLE_MOJO doubles it, so 21 -> 42) or it refuses the column
+# with a specific MT_CLOSE message. The output column is pinned to BIGINT so an
+# accepted value always comes back through the INT64 block.
+
+def _coltype_cases():
+    return {
+        "BIGINT":    dict(col=PB_INT64,     batch=lambda: m_next([21]),
+                          expect=("emit", [42])),
+        "INTEGER":   dict(col=PB_INT32,     batch=lambda: m_next_i32([21]),
+                          expect=("emit", [42])),
+        "DECIMAL":   dict(col=PB_NUMERIC,   batch=lambda: m_next_str([21]),
+                          expect=("emit", [42])),
+        "DOUBLE":    dict(col=PB_DOUBLE,    batch=lambda: m_next_rows_only(1),
+                          expect=("close", "not integer-convertible")),
+        "BOOLEAN":   dict(col=PB_BOOLEAN,   batch=lambda: m_next_rows_only(1),
+                          expect=("close", "not integer-convertible")),
+        "VARCHAR":   dict(col=PB_STRING,    batch=lambda: m_next_strings(["hello"]),
+                          expect=("close", "bad char")),
+        "DATE":      dict(col=PB_DATE,      batch=lambda: m_next_strings(["2020-01-01"]),
+                          expect=("close", "bad char")),
+        "TIMESTAMP": dict(col=PB_TIMESTAMP, batch=lambda: m_next_strings(["2020-01-01 12:00:00"]),
+                          expect=("close", "bad char")),
+    }
+
+def expect_msg(sock, expect_mt):
+    try:
+        got = sock.recv()
+    except zmq.Again:
+        print("TIMEOUT waiting for %s(%d) — the container sent nothing"
+              % (MTN.get(expect_mt, "?"), expect_mt), file=sys.stderr)
+        sys.exit(2)
+    mt = msg_type(got)
+    print("  <- %s(%d)" % (MTN.get(mt, "?"), mt), flush=True)
+    if mt != expect_mt:
+        if mt == MT_CLOSE:
+            print("  !! container CLOSE: " + close_message(got), file=sys.stderr)
+        print("  !! expected %s(%d) but the container sent %s(%d)"
+              % (MTN.get(expect_mt, "?"), expect_mt, MTN.get(mt, "?"), mt),
+              file=sys.stderr)
+        sys.exit(3)
+    return got
+
+def run_coltype(bind, name):
+    cases = _coltype_cases()
+    if name not in cases:
+        print("unknown coltype '%s'; known: %s" % (name, ", ".join(sorted(cases))),
+              file=sys.stderr)
+        return 2
+    case = cases[name]
+    kind, want = case["expect"]
+    ctx = zmq.Context()
+    sock = ctx.socket(zmq.REP)
+    sock.setsockopt(zmq.RCVTIMEO, 10000)
+    sock.bind(bind)
+
+    expect_msg(sock, MT_CLIENT); sock.send(m_info("DOUBLE_MOJO"))
+    expect_msg(sock, MT_META);   sock.send(m_meta(case["col"], PB_INT64))
+    expect_msg(sock, MT_RUN);    sock.send(bare(MT_RUN))
+    expect_msg(sock, MT_NEXT);   sock.send(case["batch"]())
+
+    # The container now either asks for more rows (it accepted the column) or
+    # sends MT_CLOSE (it refused it). Branch on whichever it actually sends.
+    try:
+        raw = sock.recv()
+    except zmq.Again:
+        print("FAIL: coltype %s — container sent nothing after the batch "
+              "(crashed instead of MT_CLOSE?)" % name, file=sys.stderr)
+        return 2
+    mt = msg_type(raw)
+    print("  <- %s(%d)" % (MTN.get(mt, "?"), mt), flush=True)
+
+    if mt == MT_NEXT:                                    # accepted
+        sock.send(bare(MT_DONE))
+        emit = expect_msg(sock, MT_EMIT); sock.send(bare(MT_EMIT))
+        got = emit_int64s(emit)
+        expect_msg(sock, MT_DONE);     sock.send(bare(MT_DONE))
+        expect_msg(sock, MT_RUN);      sock.send(bare(MT_CLEANUP))
+        expect_msg(sock, MT_FINISHED); sock.send(bare(MT_FINISHED))
+        if kind == "emit" and got == want:
+            print("OK: coltype %s converted -> %s" % (name, got))
+            return 0
+        print("FAIL: coltype %s expected (%s, %s) but container EMITted %s"
+              % (name, kind, want, got), file=sys.stderr)
+        return 1
+
+    if mt == MT_CLOSE:                                   # refused
+        msg = close_message(raw)
+        sock.send(bare(MT_CLOSE))   # ack so the container's fail() recv completes
+        if kind == "close" and want in msg:
+            print("OK: coltype %s refused: %s" % (name, msg))
+            return 0
+        print("FAIL: coltype %s expected (%s, %r) but container CLOSEd %r"
+              % (name, kind, want, msg), file=sys.stderr)
+        return 1
+
+    print("FAIL: coltype %s unexpected message %s(%d)"
+          % (name, MTN.get(mt, "?"), mt), file=sys.stderr)
+    return 1
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bind", default="tcp://127.0.0.1:6583")
@@ -279,8 +421,15 @@ def main():
     ap.add_argument("--splits", type=int, default=1,
                     help="send the group's rows across N MT_NEXT batches "
                          "(tests the run loop's batch accumulation)")
+    ap.add_argument("--coltype",
+                    help="drive the SQL datatype compatibility case for this "
+                         "Exasol column type (BIGINT, INTEGER, DECIMAL, DOUBLE, "
+                         "BOOLEAN, VARCHAR, DATE, TIMESTAMP) and assert the "
+                         "container converts or refuses it per the contract")
     ap.add_argument("--values", default="10,21,-5,0,7")
     args = ap.parse_args()
+    if args.coltype:
+        sys.exit(run_coltype(args.bind, args.coltype))
     values = [int(x) for x in args.values.split(",")]
     sys.exit(run(args.bind, values, numeric=args.numeric, sum_mode=args.sum,
                  py_mode=args.pyscale, splits=args.splits))

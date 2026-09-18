@@ -9,6 +9,7 @@ fastest/most-isolated to closest-to-production, plus the metadata contract:
 |-------|----------------|-------|-------------|
 | **Codec unit tests** | The pure protobuf/wire functions (varint, zig-free int reinterpret, packed repeated, length-prefix bounds, decimal parsing, block mapping) are correct in isolation. Analogue of the Rust SLC's per-module `*_tests.rs`. | [`test/mojo/test_codec.mojo`](test/mojo/test_codec.mojo) | `docker build --target unittest` (compiled + run in the Mojo builder image) |
 | **Protocol self-test** | The real `mojoudfclient` binary speaks the full ZMQ + protobuf `MT_*` exchange correctly for every UDF/wire combination, including multi-batch group accumulation. | [`test/fake_exasol.py`](test/fake_exasol.py) driven from the Dockerfile `selftest` stage | `docker build --target selftest` |
+| **Datatype compatibility** | Every Exasol SQL column type is driven through the real binary and asserted to either convert correctly or be refused with a precise `MT_CLOSE` error — the contract of which SQL types map to a Mojo `Int64`. Part of the `selftest` stage (`--coltype`). | [`test/fake_exasol.py`](test/fake_exasol.py) `run_coltype` matrix | `docker build --target selftest` |
 | **Tarball contract** | The shipped SLC rootfs satisfies the sandbox contract: client present/executable and matching the host arch, DT_NEEDED closure fully resolvable through the committed loader search path, bundled CPython staged, sandbox skeleton mount points present, size within a ceiling, and the metadata byte-identical to source. Ported from `dist/tests/slc_tarball_test.sh`. | [`test/slc_tarball_test.sh`](test/slc_tarball_test.sh) | build `--target artifact`, then run the script on the extracted tarball |
 | **Language-definitions contract** | The `build_info/language_definitions.json` document conforms to the Exasol v2 metadata schema (aliases `MOJO`, `lang=mojo`, `localzmq+protobuf`, `/exaudf/mojoudfclient`, `deprecation: null`, no legacy keys). One fixture per defect class proves each assertion actually discriminates. Ported from `dist/tests/language_definitions*_test.sh`. | [`test/language_definitions_test.sh`](test/language_definitions_test.sh), [`test/language_definitions_fixtures_test.sh`](test/language_definitions_fixtures_test.sh), [`test/fixtures/language_definitions/`](test/fixtures/language_definitions/) | pure `bash` + `jq` |
 
@@ -43,6 +44,32 @@ docker run --rm -v "$PWD:/repo:ro" -v /tmp/lc-out:/art:ro -w /repo debian:trixie
 bash test/language_definitions_test.sh build_info/language_definitions.json
 bash test/language_definitions_fixtures_test.sh
 ```
+
+## SQL datatype compatibility matrix
+
+`fake_exasol.py --coltype <TYPE>` sends one input column of the given Exasol type
+through the real binary (script `DOUBLE_MOJO`, output pinned to BIGINT) and
+asserts the container's response. This documents exactly which SQL types the
+container converts to a Mojo `Int64` and how it refuses the rest — a refusal is a
+clean `MT_CLOSE`, never a crash.
+
+| Exasol type | protobuf `column_type` | wire block | Contract |
+|-------------|------------------------|------------|----------|
+| `BIGINT` | INT64 | `data_int64` | converted |
+| `INTEGER` | INT32 | `data_int32` | converted |
+| `DECIMAL`/`NUMERIC` | NUMERIC | `data_string` (decimal text) | converted |
+| `DOUBLE` | DOUBLE | `data_double` | refused — `not integer-convertible` |
+| `BOOLEAN` | BOOLEAN | `data_bool` | refused — `not integer-convertible` |
+| `VARCHAR` | STRING | `data_string` | refused unless the text is an integer literal — non-numeric text → `bad char` |
+| `DATE` | DATE | `data_string` | refused — date text → `bad char` |
+| `TIMESTAMP` | TIMESTAMP | `data_string` | refused — timestamp text → `bad char` |
+
+`NUMERIC`, `DATE`, `TIMESTAMP`, and `VARCHAR` all arrive in the same
+`data_string` block; the container parses it as a decimal integer, so a value
+converts only when its text is an integer literal (this is why `DECIMAL` passes
+and `DATE`/`TIMESTAMP`/non-numeric `VARCHAR` are refused). Extending real support
+for `DOUBLE`/`BOOLEAN`/temporal types would mean widening the codec and a UDF,
+then flipping the matching row from *refused* to *converted*.
 
 ## Adding a test UDF case
 

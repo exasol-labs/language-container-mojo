@@ -108,25 +108,30 @@ fn main() raises:
         # row per group (reduce) — both are just run_udf over the group's column.
         var in_vals = List[Int64]()
         var in_nulls = List[Bool]()
-        while True:
-            sock.send(enc_bare(MT_NEXT, conn_id))
-            var batch = decode_response(sock.recv())
-            conn_id = batch.conn_id
-            if batch.mt == MT_DONE:
-                break                                 # group boundary
-            if batch.mt == MT_CLEANUP:
-                sock.send(enc_bare(MT_FINISHED, conn_id)); _ = sock.recv()
-                return
-            if not batch.has_table:
-                continue
-            var col = column_i64(batch.table, input_cols, 0)   # BIGINT column 0
-            for i in range(len(col[0])):
-                in_vals.append(col[0][i]); in_nulls.append(col[1][i])
-
-        # Run the UDF (may raise — e.g. a Python-backed UDF) and emit its output
-        # as one MT_EMIT, packed into the block the output column's declared type
-        # uses (INT64 / INT32 / NUMERIC-string). A UDF error becomes MT_CLOSE.
+        # Collect the whole group's input (column 0), then run the UDF once and
+        # emit its output as one MT_EMIT, packed into the block the output
+        # column's declared type uses (INT64 / INT32 / NUMERIC-string). A SCALAR
+        # UDF returns one row per input row (map); a SET UDF returns one row per
+        # group (reduce). The whole collect+run+emit is guarded so any failure —
+        # an unsupported/non-integer-convertible input column, a malformed batch,
+        # or a UDF-side error — becomes a clean MT_CLOSE instead of an uncaught
+        # crash that would leave the DB waiting for a reply.
         try:
+            while True:
+                sock.send(enc_bare(MT_NEXT, conn_id))
+                var batch = decode_response(sock.recv())
+                conn_id = batch.conn_id
+                if batch.mt == MT_DONE:
+                    break                                 # group boundary
+                if batch.mt == MT_CLEANUP:
+                    sock.send(enc_bare(MT_FINISHED, conn_id)); _ = sock.recv()
+                    return
+                if not batch.has_table:
+                    continue
+                var col = column_i64(batch.table, input_cols, 0)   # column 0
+                for i in range(len(col[0])):
+                    in_vals.append(col[0][i]); in_nulls.append(col[1][i])
+
             var res = run_udf(script_name, in_vals, in_nulls)
             if len(res[0]) > 0:
                 var out_type = output_cols[0].col_type if len(output_cols) > 0 else PB_INT64

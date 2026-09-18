@@ -186,7 +186,7 @@ RUN set -u; \
         timeout 25 chroot /slc /exaudf/mojoudfclient tcp://127.0.0.1:6583 lang=mojo > /c.out 2>&1 || true; \
         wait "$FAKE" 2>/dev/null || true; \
         cat /fake.out; \
-        grep -qE "OK: .*verified" /fake.out || { echo "SELFTEST FAILED for: fake_exasol $*"; sed -n '1,4p' /c.out; exit 1; }; \
+        grep -qE "^OK:" /fake.out || { echo "SELFTEST FAILED for: fake_exasol $*"; sed -n '1,4p' /c.out; exit 1; }; \
         sleep 1; \
     }; \
     run_case; \
@@ -195,6 +195,15 @@ RUN set -u; \
     run_case --pyscale; \
     run_case --splits 3; \
     run_case --sum --splits 2; \
+    echo "--- SQL datatype compatibility matrix ---"; \
+    run_case --coltype BIGINT; \
+    run_case --coltype INTEGER; \
+    run_case --coltype DECIMAL; \
+    run_case --coltype DOUBLE; \
+    run_case --coltype BOOLEAN; \
+    run_case --coltype VARCHAR; \
+    run_case --coltype DATE; \
+    run_case --coltype TIMESTAMP; \
     echo "=== ALL SELFTEST CASES PASSED ==="
 
 # ── Stage: unittest — pure codec unit tests (no ZMQ, no Exasol) ───────────────
