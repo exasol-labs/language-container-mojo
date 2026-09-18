@@ -19,7 +19,29 @@ Every layer is wired into both CI pipelines
 lint (shellcheck, hadolint, Python syntax) and security (gitleaks, pip-audit)
 jobs.
 
-## Running each layer locally
+## Running everything at once
+
+```bash
+make test          # run all layers with a one-line-per-layer summary
+# or, without make:
+bash test/run-all.sh
+```
+
+`make test` (a thin wrapper over [`test/run-all.sh`](test/run-all.sh)) runs all
+four layers in order and exits non-zero if any fails. It works on a stock macOS
+or Linux host with only Docker installed — the tarball layer runs its `readelf`
+/`jq` checks inside a container, and the contract layer falls back to a container
+if the host has no `jq`. You can also run a subset:
+
+```bash
+bash test/run-all.sh unit contracts   # just those layers
+```
+
+Per-layer `make` targets exist too — `make unittest`, `make selftest`,
+`make contracts`, `make tarball` (and `make artifact` to just build the tarball
+into `out-lc/`); `make help` lists them.
+
+## Running each layer by hand
 
 All layers need Docker; the two shell contract tests additionally need `jq` (and
 `binutils` for `readelf`), which the commands below provide via a container so

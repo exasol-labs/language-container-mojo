@@ -16,3 +16,4 @@ __pycache__/
 # Local GitLab runner TLS CA (host-specific, never commit)
 gitlab-local-ca.pem
 *.pem
+out-lc/
