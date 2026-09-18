@@ -12,6 +12,7 @@ fastest/most-isolated to closest-to-production, plus the metadata contract:
 | **Datatype compatibility** | Every Exasol SQL column type is driven through the real binary and asserted to either convert correctly or be refused with a precise `MT_CLOSE` error — the contract of which SQL types map to a Mojo `Int64`. Part of the `selftest` stage (`--coltype`). | [`test/fake_exasol.py`](test/fake_exasol.py) `run_coltype` matrix | `docker build --target selftest` |
 | **Tarball contract** | The shipped SLC rootfs satisfies the sandbox contract: client present/executable and matching the host arch, DT_NEEDED closure fully resolvable through the committed loader search path, bundled CPython staged, sandbox skeleton mount points present, size within a ceiling, and the metadata byte-identical to source. Ported from `dist/tests/slc_tarball_test.sh`. | [`test/slc_tarball_test.sh`](test/slc_tarball_test.sh) | build `--target artifact`, then run the script on the extracted tarball |
 | **Language-definitions contract** | The `build_info/language_definitions.json` document conforms to the Exasol v2 metadata schema (aliases `MOJO`, `lang=mojo`, `localzmq+protobuf`, `/exaudf/mojoudfclient`, `deprecation: null`, no legacy keys). One fixture per defect class proves each assertion actually discriminates. Ported from `dist/tests/language_definitions*_test.sh`. | [`test/language_definitions_test.sh`](test/language_definitions_test.sh), [`test/language_definitions_fixtures_test.sh`](test/language_definitions_fixtures_test.sh), [`test/fixtures/language_definitions/`](test/fixtures/language_definitions/) | pure `bash` + `jq` |
+| **E2E (real Exasol)** | The SLC deployed into a real `exasol/docker-db`, MOJO language activated, and every UDF (SCALAR / SET / EMITS + INTEGER/DECIMAL inputs) exercised through actual SQL. Analogue of the Rust SLC's `it/db_roundtrip`. **x86_64 GitHub only** (docker-db is amd64-only). | [`test/e2e/e2e_test.py`](test/e2e/e2e_test.py) (pyexasol) driven by [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml) | GitHub Actions (push to `main` / manual dispatch) |
 
 Every layer is wired into both CI pipelines
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml),
@@ -107,7 +108,15 @@ The Rust SLC bundles exarrow/OpenSSL and ships a much larger surface, so its
 tarball test also asserts an OpenSSL trust store, zoneinfo, `nsswitch` modules, a
 committed glibc floor, and cargo-generated license bundles. The native Mojo
 container has no analogue for those, so those assertions are intentionally
-omitted rather than ported as vacuous checks. Its live end-to-end matrix against
-real `exasol/docker-db` versions is also out of scope here — this suite verifies
-the container against a faithful fake DB and the shipped artifact; the live path
-is covered by the deploy instructions in the [`README`](README.md).
+omitted rather than ported as vacuous checks.
+
+The live end-to-end path *is* covered (the E2E layer above), but against a
+single pinned `exasol/docker-db` version rather than the Rust SLC's full version
+matrix, and on x86_64 only — Exasol does not publish arm64 docker-db images, and
+QEMU-emulating the privileged multi-GB DB is not viable. Extending E2E to a
+version matrix is a matter of adding entries to the workflow.
+
+> Note: the E2E workflow is the one layer not verifiable on an arm64 dev host
+> (no local x86_64 Exasol), so its first real run is on GitHub Actions; treat an
+> initial red run there as expected iteration, not a regression in the offline
+> layers above.

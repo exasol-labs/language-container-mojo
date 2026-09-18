@@ -33,7 +33,7 @@ jobs:
 
       - name: Python syntax
         run: |
-          python3 -m py_compile test/fake_exasol.py test/diag_probe.py python/pyudf/*.py
+          python3 -m py_compile test/fake_exasol.py test/diag_probe.py test/e2e/e2e_test.py python/pyudf/*.py
 
       - name: Dependency audit (requirements.txt)
         run: |

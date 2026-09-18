@@ -29,7 +29,7 @@ python-syntax:
   script:
     - docker run --rm -v "$PWD:/w" -w /w python:3.13-slim
         python -m py_compile test/fake_exasol.py test/diag_probe.py
-        python/pyudf/__init__.py python/pyudf/transform.py
+        test/e2e/e2e_test.py python/pyudf/__init__.py python/pyudf/transform.py
 
 gitleaks:
   stage: security

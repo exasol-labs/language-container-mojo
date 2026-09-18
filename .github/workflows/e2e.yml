@@ -1,0 +1,125 @@
+name: E2E (real Exasol)
+
+# End-to-end test against a real Exasol database: build the SLC, upload it to
+# BucketFS, activate the MOJO language, and run real SQL over the UDFs
+# (test/e2e/e2e_test.py). Exasol's docker-db images are x86_64-only and the UDF
+# sandbox needs a privileged container, so this runs on x86_64 GitHub runners
+# only (there is no arm64 equivalent — the same constraint the Rust SLC documents).
+#
+# Heavy (boots a multi-GB DB), so it runs on push to main and on demand, not on
+# every PR. Trigger manually from the Actions tab (workflow_dispatch) to test a
+# branch.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXASOL_VERSION: "8.29.13"     # x86_64 docker-db tag; bump deliberately
+  SLC_BUCKET_PATH: "slc/mojoslc"
+
+jobs:
+  e2e:
+    name: E2E on Exasol ${{ env.EXASOL_VERSION }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Runner environment
+        run: |
+          uname -a
+          echo "--- cpus/mem ---"; nproc; free -m
+          echo "--- disk ---"; df -h /
+
+      # Reclaim ~30 GB of preinstalled toolchains: the multi-GB Exasol image + the
+      # SLC image + the DB's /exa data do not fit in the standard runner's ~21 GB.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/powershell /usr/share/swift /usr/lib/jvm || true
+          sudo docker image prune -af || true
+          df -h /
+
+      # Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1, which
+      # denies CAP_SYS_ADMIN to the unprivileged user namespace Exasol's nschroot
+      # UDF sandbox creates — so every UDF dies with "VM crashed" until it is
+      # disabled. (Documented at length in the Rust SLC's CI.)
+      - name: Allow unprivileged user namespaces (Exasol UDF sandbox)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+
+      - name: Build SLC tarball (--target artifact)
+        run: |
+          mkdir -p /tmp/lc-out
+          docker build -f Dockerfile --target artifact \
+            --output type=local,dest=/tmp/lc-out .
+          ls -la /tmp/lc-out
+
+      - name: Install pyexasol
+        run: pip install --user pyexasol
+
+      - name: Start Exasol ${{ env.EXASOL_VERSION }}
+        run: |
+          docker run -d --name exasol-db --privileged \
+            --shm-size=2g \
+            -e EXA_DB_MEM_SIZE='4 GiB' \
+            -e COSLWD_ENABLED=1 \
+            -p 8563:8563 -p 2581:2581 \
+            exasol/docker-db:${EXASOL_VERSION}
+
+      - name: Wait for Exasol to accept SQL
+        run: |
+          probe="import ssl,pyexasol; pyexasol.connect(dsn='localhost:8563',user='sys',password='exasol',encryption=True,websocket_sslopt={'cert_reqs':ssl.CERT_NONE}).execute('SELECT 1').fetchone(); print('ready')"
+          for i in $(seq 1 60); do
+            if python3 -c "$probe"; then echo "Exasol is ready."; break; fi
+            echo "attempt $i/60 — waiting 5s"; sleep 5
+          done
+
+      - name: Extract BucketFS write password
+        run: |
+          BFSPASS=$(docker exec exasol-db bash -c "
+            awk '/\[\[Bucket : default\]\]/{f=1} f && /WritePasswd/{print \$3; exit}' /exa/etc/EXAConf \
+            | python3 -c 'import sys, base64; print(base64.b64decode(sys.stdin.read().strip()).decode())'
+          ")
+          echo "::add-mask::$BFSPASS"
+          echo "BFSPASS=$BFSPASS" >> "$GITHUB_ENV"
+
+      - name: Upload SLC tarball to BucketFS (auto-extracts)
+        run: |
+          # Uploading <name>.tar.gz to a bucket extracts it into <name>/ , so the
+          # tarball's exaudf/ lands at buckets/bfsdefault/default/${SLC_BUCKET_PATH}/exaudf/.
+          curl -k -sSf -X PUT \
+            -T /tmp/lc-out/mojo-slc.tar.gz \
+            "https://w:${BFSPASS}@localhost:2581/default/${SLC_BUCKET_PATH}.tar.gz"
+          echo "uploaded; giving BucketFS a moment to extract"; sleep 10
+
+      - name: Run E2E test
+        env:
+          EXASOL_HOST: localhost
+          EXASOL_PORT: "8563"
+          EXASOL_USER: sys
+          EXASOL_PASSWORD: exasol
+          SLC_LANGUAGE_URL: "MOJO=localzmq+protobuf:///bfsdefault/default/slc/mojoslc?lang=mojo#buckets/bfsdefault/default/slc/mojoslc/exaudf/mojoudfclient"
+        run: python3 test/e2e/e2e_test.py
+
+      - name: Dump Exasol logs on failure
+        if: failure()
+        run: |
+          echo "=== container stats ==="; docker stats --no-stream exasol-db || true
+          echo "=== host kernel ring buffer (UDF sandbox kills land here) ==="
+          sudo dmesg --ctime | grep -iE 'exaudf|seccomp|segfault|trap|invalid opcode|sig(sys|ill|segv|abrt)|killed process|oom|audit.*denied' | tail -60 || true
+          echo "=== exasql crash logs ==="
+          docker exec exasol-db sh -c 'find /exa/logs/cored -name "exasql.*" -type f 2>/dev/null | sort | xargs -I{} sh -c "echo === {} ===; tail -40 {}"' || true
+
+      - name: Stop Exasol container
+        if: always()
+        run: |
+          docker stop exasol-db || true
+          docker rm exasol-db || true
