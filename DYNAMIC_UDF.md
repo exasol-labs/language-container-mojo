@@ -187,10 +187,59 @@ Errors surface as SQL errors prefixed `F-UDF-CL-MOJO-0001`.
 
 ---
 
-## Note: Exasol Nano
+## Nano vs Enterprise: where the `.so` lives
 
-Nano deploys the SLC by mounting a directory (not BucketFS), and its buckets
-mount point can be shadowed inside the sandbox. On Nano, place the `.so`
-somewhere else in the mounted SLC tree that the sandbox exposes — e.g.
-`…/slc/mojo/exaudf/my_udf.so` — and reference it as `/exaudf/my_udf.so` in
-`%udf_object`. Everything else (build, register, run) is identical.
+The `%udf_object` path must resolve **inside the UDF sandbox**, and the two
+editions expose different locations to it — so the same `.so` goes in a different
+place depending on where you run.
+
+### Enterprise — the `.so` goes in BucketFS (`/buckets/...`)
+
+The database bind-mounts BucketFS **read-only into every UDF sandbox** at
+`/buckets/<service>/<bucket>/...`. You upload the `.so` with `curl` (Step 3) and
+reference that sandbox path (Step 4). This is the path all the steps above use:
+
+```
+%udf_object /buckets/bfsdefault/default/udfs/my_udf.so
+```
+
+You do **not** hand-place files in the container's filesystem; BucketFS owns
+`/buckets`.
+
+### Nano — the `.so` goes in the SLC tree (`/exaudf/...`)
+
+Nano deploys the SLC by mounting a directory (`MOJO=builtin_mojo`), and its UDF
+sandbox **chroots into that SLC rootfs** — so the SLC's own directories (like
+`exaudf/`) are visible to the UDF, but a usable `/buckets/...` mount is **not**
+exposed. Concretely, on a Nano whose `bucketfs.conf` reads:
+
+```
+/exa/slc __builtin__ slc /exa/slc dDE= P
+# builtinScriptLanguageName=...,slc/mojo   → the SLC is bucket 'slc', path 'mojo'
+```
+
+the SLC lives at `/exa/slc/mojo`, and inside the sandbox that *is* the root.
+Testing confirmed:
+
+- Copying a `.so` into the SLC's placeholder `…/slc/mojo/buckets/` and using
+  `%udf_object /buckets/my_udf.so` → **fails** (`cannot open shared object file`):
+  that dir is a mount point, shadowed inside the sandbox.
+- `%udf_object /buckets/<service>/slc/mojo/exaudf/my_udf.so` for every plausible
+  service name → also **fails**: this Nano exposes no reachable `/buckets` tree
+  to the UDF.
+- Placing the `.so` in the SLC rootfs and using `/exaudf/...` → **works**.
+
+So on Nano, copy the `.so` into the mounted SLC and reference it there:
+
+```bash
+cp my_udf.so ~/…/exanano-data/slc/mojo/exaudf/my_udf.so
+```
+```sql
+CREATE OR REPLACE MOJO SCALAR SCRIPT MY_UDF(val BIGINT) RETURNS BIGINT AS
+%udf_object /exaudf/my_udf.so
+/
+```
+
+Everything else — writing the UDF (Step 1) and building the `.so` (Step 2) — is
+identical across editions; only the deploy location and the `%udf_object` path
+differ.

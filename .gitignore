@@ -17,3 +17,4 @@ __pycache__/
 gitlab-local-ca.pem
 *.pem
 out-lc/
+*.so
