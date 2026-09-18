@@ -416,8 +416,10 @@ reuses the CPython runtime bundled in the container (the `.so` ships no Python).
 Two constraints: the `.so` must be built with the **same Mojo toolchain** as the
 container (the host checks an ABI version and refuses a mismatch), and any extra
 Python packages it imports must be on `PYTHONPATH` (bundled, or uploaded too).
-See [`src/loader.mojo`](src/loader.mojo) for the ABI and
-[`examples/udf_so/`](examples/udf_so/) for the template.
+
+**Full step-by-step (build → upload to BucketFS → register → run):
+[`DYNAMIC_UDF.md`](DYNAMIC_UDF.md).** See also [`src/loader.mojo`](src/loader.mojo)
+for the ABI and [`examples/udf_so/`](examples/udf_so/) for the template.
 
 ## Diagnosing a live run
 
