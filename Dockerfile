@@ -164,6 +164,17 @@ RUN set +e; \
 RUN find /slc/tmp -mindepth 1 -delete 2>/dev/null || true
 RUN tar --hard-dereference -C /slc -czf /mojo-slc.tar.gz .
 
+# ── Stage: toolbox — readelf (binutils) + jq for the shell contract tests ─────
+# Built once and cached, so test/slc_tarball_test.sh and the language-definitions
+# checks never apt-install at run time — a transient Docker DNS/network blip when
+# fetching binutils/jq inside a throwaway container was breaking the tarball test
+# ("Unable to locate package binutils / readelf not found"). Rerunning the tests
+# now reuses this cached image offline; only a rebuild touches the network.
+#   docker build -f Dockerfile --target toolbox -t mojo-slc-toolbox .
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS toolbox
+RUN apt-get update && apt-get install -y --no-install-recommends binutils jq \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Stage: selftest — run the real protocol against a fake Exasol (Linux) ─────
 # Runs on macOS too (Docker is Linux). Drives mojoudfclient through the full
 # MT_* exchange with test/fake_exasol.py and prints a per-message trace, so an

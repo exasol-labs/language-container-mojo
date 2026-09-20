@@ -24,6 +24,12 @@ results=()
 
 hr() { printf '=%.0s' {1..70}; echo; }
 
+# Build the cached toolbox image (readelf + jq) once, so the shell contract tests
+# run offline instead of apt-installing tools inside a throwaway container.
+ensure_toolbox() {
+    docker build -f Dockerfile --target toolbox -t mojo-slc-toolbox . >/dev/null
+}
+
 # --- layers ------------------------------------------------------------------
 
 layer_unit() {
@@ -39,8 +45,8 @@ layer_contracts() {
         bash test/language_definitions_test.sh build_info/language_definitions.json \
             && bash test/language_definitions_fixtures_test.sh
     else
-        docker run --rm -v "$ROOT:/w" -w /w debian:trixie-slim bash -c '
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends jq >/dev/null
+        ensure_toolbox || return 1
+        docker run --rm -v "$ROOT:/w" -w /w mojo-slc-toolbox bash -c '
             bash test/language_definitions_test.sh build_info/language_definitions.json
             bash test/language_definitions_fixtures_test.sh'
     fi
@@ -48,11 +54,11 @@ layer_contracts() {
 
 layer_tarball() {
     local out rc
+    ensure_toolbox || return 1
     out="$(mktemp -d)"
     if docker build -f Dockerfile --target artifact --output "type=local,dest=$out" .; then
-        docker run --rm -v "$ROOT:/repo:ro" -v "$out:/art:ro" -w /repo debian:trixie-slim bash -c '
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends binutils jq >/dev/null
-            bash test/slc_tarball_test.sh /art/mojo-slc.tar.gz'
+        docker run --rm -v "$ROOT:/repo:ro" -v "$out:/art:ro" -w /repo mojo-slc-toolbox \
+            bash -c 'bash test/slc_tarball_test.sh /art/mojo-slc.tar.gz'
         rc=$?
     else
         rc=1

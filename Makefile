@@ -30,10 +30,9 @@ artifact:
 
 ## tarball: build the SLC tarball and run the rootfs contract test on it
 tarball: artifact
+	$(DOCKER) build -f Dockerfile --target toolbox -t mojo-slc-toolbox .
 	$(DOCKER) run --rm -v "$(CURDIR):/repo:ro" -v "$(CURDIR)/out-lc:/art:ro" -w /repo \
-		debian:trixie-slim bash -c 'apt-get update -qq \
-		&& apt-get install -y -qq --no-install-recommends binutils jq >/dev/null \
-		&& bash test/slc_tarball_test.sh /art/mojo-slc.tar.gz'
+		mojo-slc-toolbox bash -c 'bash test/slc_tarball_test.sh /art/mojo-slc.tar.gz'
 
 ## help: list targets
 help:
