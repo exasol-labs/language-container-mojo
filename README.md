@@ -484,7 +484,8 @@ test/diag_probe.py    offline check for the diagnostic build
 examples/register.sql activate the language + create/call all three UDFs
 examples/triple.mojo  worked example: adding a new native UDF
 ```
-
+  
+  
 ## Current limitations
 
 - **Live e2e not confirmed green.** The self-test verifies the full wire protocol

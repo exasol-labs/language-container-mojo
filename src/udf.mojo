@@ -9,8 +9,8 @@
 
 from python import Python
 
-# double_mojo(val BIGINT) RETURNS BIGINT — SCALAR: out[i] = 2 * in[i], NULL -> NULL.
-fn run_double_mojo(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
+# double_mojo_native(val BIGINT) RETURNS BIGINT — SCALAR: out[i] = 2 * in[i], NULL -> NULL.
+fn run_double_mojo_native(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
     var out = List[Int64]()
     var out_nulls = List[Bool]()
     for i in range(len(values)):
@@ -76,8 +76,8 @@ fn run_udf(name: String, values: List[Int64], nulls: List[Bool]) raises -> (List
         return run_py_scale(values, nulls)
     if name == "MIRROR_MOJO":
         return run_mirror_mojo(values, nulls)
-    return run_double_mojo(values, nulls)   # DOUBLE_MOJO (default)
+    return run_double_mojo_native(values, nulls)   # DOUBLE_MOJO_NATIVE (default)
 
 fn is_known(name: String) -> Bool:
-    return (name == "DOUBLE_MOJO" or name == "SUM_POSITIVE"
+    return (name == "DOUBLE_MOJO_NATIVE" or name == "SUM_POSITIVE"
             or name == "PY_SCALE" or name == "MIRROR_MOJO")
