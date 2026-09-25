@@ -22,7 +22,7 @@ fn run_triple(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool
 #       return run_triple(values, nulls)
 #
 # ── 3. Add the name to is_known() in src/udf.mojo ───────────────────────────
-#   return name == "DOUBLE_MOJO" or name == "SUM_POSITIVE" or name == "TRIPLE_MOJO"
+#   return name == "DOUBLE_MOJO_NATIVE" or name == "SUM_POSITIVE" or name == "TRIPLE_MOJO"
 #
 # Then rebuild the SLC (see ../build.md), redeploy, and register it:
 #

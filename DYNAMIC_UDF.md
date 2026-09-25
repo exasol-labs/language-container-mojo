@@ -6,7 +6,7 @@ container loads from **BucketFS at run time**, instead of baking it into
 container rebuild.
 
 It is an **extension**, not a replacement: a script that does **not** carry a
-`%udf_object` line keeps using the compiled-in UDFs (`DOUBLE_MOJO`,
+`%udf_object` line keeps using the compiled-in UDFs (`DOUBLE_MOJO_NATIVE`,
 `SUM_POSITIVE`, `PY_SCALE`, `MIRROR_MOJO`). See [`src/loader.mojo`](src/loader.mojo)
 for the ABI and [`examples/udf_so/double_ext.mojo`](examples/udf_so/double_ext.mojo)
 for the template.
@@ -14,6 +14,14 @@ for the template.
 > **Prerequisite:** the Mojo SLC container is already deployed and the `MOJO`
 > language is activated (README sections 4b + 5). The steps below add a UDF on
 > top of that deployment.
+
+> **Performance:** the `.so` path adds a fixed per-group cost — the input column
+> is marshalled across the C ABI (copied in, the `.so` allocates its output,
+> copied back) and the `.so` is `dlopen`ed once per VM. For a *trivial* UDF this
+> can be ~2× a baked-in UDF (the copies dominate a single multiply); for any
+> non-trivial UDF it is negligible. Bake hot, stable, trivial UDFs into the
+> container; use `.so` for anything you want to change without a rebuild. See the
+> "Baked-in vs dynamic `.so`" table in the [README](README.md).
 
 ---
 

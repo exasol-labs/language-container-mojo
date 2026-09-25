@@ -38,7 +38,7 @@ NO_TLS = {"cert_reqs": ssl.CERT_NONE}   # docker-db ships a self-signed cert
 # The scripts under test (native client dispatches by name; the body is ignored
 # but must be present). Mirrors examples/register.sql.
 SCRIPTS = {
-    "DOUBLE_MOJO":  "CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO(val BIGINT)\n"
+    "DOUBLE_MOJO_NATIVE":  "CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO_NATIVE(val BIGINT)\n"
                     "RETURNS BIGINT AS\n-- native client dispatches by name\n",
     "SUM_POSITIVE": "CREATE OR REPLACE MOJO SET SCRIPT SUM_POSITIVE(val BIGINT)\n"
                     "RETURNS BIGINT AS\n-- native client dispatches by name\n",
@@ -94,15 +94,15 @@ def run_checks(c):
             failures.append(name)
 
     # SCALAR (map) + NULL passthrough
-    check("DOUBLE_MOJO(21)", fetch_scalar(c, "SELECT DOUBLE_MOJO(21)"), 42)
-    check("DOUBLE_MOJO(-5)", fetch_scalar(c, "SELECT DOUBLE_MOJO(-5)"), -10)
-    check("DOUBLE_MOJO(NULL)", fetch_scalar(c, "SELECT DOUBLE_MOJO(CAST(NULL AS BIGINT))"), None)
+    check("DOUBLE_MOJO_NATIVE(21)", fetch_scalar(c, "SELECT DOUBLE_MOJO_NATIVE(21)"), 42)
+    check("DOUBLE_MOJO_NATIVE(-5)", fetch_scalar(c, "SELECT DOUBLE_MOJO_NATIVE(-5)"), -10)
+    check("DOUBLE_MOJO_NATIVE(NULL)", fetch_scalar(c, "SELECT DOUBLE_MOJO_NATIVE(CAST(NULL AS BIGINT))"), None)
 
     # Datatype conversions through the SQL engine: INTEGER and DECIMAL inputs.
-    check("DOUBLE_MOJO(INTEGER 21)",
-          fetch_scalar(c, "SELECT DOUBLE_MOJO(CAST(21 AS INTEGER))"), 42)
-    check("DOUBLE_MOJO(DECIMAL 21)",
-          fetch_scalar(c, "SELECT DOUBLE_MOJO(CAST(21 AS DECIMAL(18,0)))"), 42)
+    check("DOUBLE_MOJO_NATIVE(INTEGER 21)",
+          fetch_scalar(c, "SELECT DOUBLE_MOJO_NATIVE(CAST(21 AS INTEGER))"), 42)
+    check("DOUBLE_MOJO_NATIVE(DECIMAL 21)",
+          fetch_scalar(c, "SELECT DOUBLE_MOJO_NATIVE(CAST(21 AS DECIMAL(18,0)))"), 42)
 
     # SET (reduce): one row per group
     check("SUM_POSITIVE group",
@@ -138,7 +138,7 @@ def main():
             for name, ddl in SCRIPTS.items():
                 c.execute(ddl)
             # First real UDF call — this is what fails until the SLC is live.
-            _ = fetch_scalar(c, "SELECT DOUBLE_MOJO(1)")
+            _ = fetch_scalar(c, "SELECT DOUBLE_MOJO_NATIVE(1)")
             break
         except Exception as e:      # noqa: BLE001 — surface and retry
             last_err = e

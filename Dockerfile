@@ -189,8 +189,8 @@ COPY test/fake_exasol.py /fake_exasol.py
 # The example .so goes into THIS chroot only (not the shipped tarball) so the
 # selftest can exercise the dynamic %udf_object load path.
 COPY --from=builder /build/double_ext.so /slc/buckets/double_ext.so
-# Exercise every UDF/wire combination the container supports: DOUBLE_MOJO
-# (scalar) and SUM_POSITIVE (set) over the INT64 block, DOUBLE_MOJO over the
+# Exercise every UDF/wire combination the container supports: DOUBLE_MOJO_NATIVE
+# (scalar) and SUM_POSITIVE (set) over the INT64 block, DOUBLE_MOJO_NATIVE over the
 # NUMERIC/string block, and PY_SCALE (Python interop). Each case runs the real
 # binary in the chroot against the fake Exasol; the build fails if any diverges.
 # The Mojo runtime (LLVM host-CPU detection in libKGENCompilerRTShared.so) reads

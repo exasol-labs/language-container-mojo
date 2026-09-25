@@ -274,7 +274,7 @@ def run(bind, values, numeric=False, sum_mode=False, py_mode=False,
         script = "MIRROR_MOJO"
         expected = [x for v in values for x in (v, -v)]
     else:
-        script = "DOUBLE_MOJO"; expected = [v * 2 for v in values]
+        script = "DOUBLE_MOJO_NATIVE"; expected = [v * 2 for v in values]
 
     def step(expect_mt):
         try:
@@ -320,7 +320,7 @@ def run(bind, values, numeric=False, sum_mode=False, py_mode=False,
 # ---- SQL datatype compatibility matrix ------------------------------------
 # For each Exasol column type: the protobuf column_type, how a one-row input
 # batch is encoded, and the expected container behaviour — either it converts
-# the cell (script DOUBLE_MOJO doubles it, so 21 -> 42) or it refuses the column
+# the cell (script DOUBLE_MOJO_NATIVE doubles it, so 21 -> 42) or it refuses the column
 # with a specific MT_CLOSE message. The output column is pinned to BIGINT so an
 # accepted value always comes back through the INT64 block.
 
@@ -375,7 +375,7 @@ def run_coltype(bind, name):
     sock.setsockopt(zmq.RCVTIMEO, 20000)   # 20s: headroom for slow (cold x86 CI) starts
     sock.bind(bind)
 
-    expect_msg(sock, MT_CLIENT); sock.send(m_info("DOUBLE_MOJO"))
+    expect_msg(sock, MT_CLIENT); sock.send(m_info("DOUBLE_MOJO_NATIVE"))
     expect_msg(sock, MT_META);   sock.send(m_meta(case["col"], PB_INT64))
     expect_msg(sock, MT_RUN);    sock.send(bare(MT_RUN))
     expect_msg(sock, MT_NEXT);   sock.send(case["batch"]())

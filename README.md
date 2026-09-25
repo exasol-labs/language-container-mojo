@@ -88,7 +88,7 @@ The shipped example doubles a `BIGINT`:
 
 ```mojo
 # out[i] = 2 * in[i], with NULL in → NULL out  (SCALAR)
-fn run_double_mojo(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
+fn run_double_mojo_native(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
     var out = List[Int64]()
     var out_nulls = List[Bool]()
     for i in range(len(values)):
@@ -102,13 +102,16 @@ fn run_double_mojo(values: List[Int64], nulls: List[Bool]) -> (List[Int64], List
 fn run_udf(name: String, values: List[Int64], nulls: List[Bool]) -> (List[Int64], List[Bool]):
     if name == "SUM_POSITIVE":
         return run_sum_positive(values, nulls)   # SET reduce
-    return run_double_mojo(values, nulls)        # DOUBLE_MOJO (default)
+    return run_double_mojo_native(values, nulls)        # DOUBLE_MOJO_NATIVE (default)
 
 fn is_known(name: String) -> Bool:
-    return name == "DOUBLE_MOJO" or name == "SUM_POSITIVE"
+    return name == "DOUBLE_MOJO_NATIVE" or name == "SUM_POSITIVE"
 ```
 
-The scalar UDF is named `DOUBLE_MOJO` (not `DOUBLE`, a reserved Exasol keyword).
+The scalar UDF is named `DOUBLE_MOJO_NATIVE` — the `_NATIVE` suffix marks it as
+**baked into `mojoudfclient`** (as opposed to the dynamically-loaded `.so` UDF
+`DOUBLE_EXT`, see [Dynamic UDFs](#dynamic-udfs-via-shared-objects-extension-no-rebuild)),
+and it avoids `DOUBLE`, a reserved Exasol keyword.
 
 - **Change the logic:** to make it `triple`, change `values[i] * 2` to `* 3`.
 - **Add a UDF:** implement another `run_*`, add an arm to `run_udf`, and add the
@@ -134,8 +137,8 @@ The fastest correctness check is the **self-test target**, which drives the real
 binary in a chroot through the entire ZMQ/protobuf conversation against a bundled
 fake Exasol — for **every** UDF/wire combination:
 
-- `DOUBLE_MOJO` (scalar) and `SUM_POSITIVE` (set) over the INT64 block,
-- `DOUBLE_MOJO` over the NUMERIC/string block,
+- `DOUBLE_MOJO_NATIVE` (scalar) and `SUM_POSITIVE` (set) over the INT64 block,
+- `DOUBLE_MOJO_NATIVE` over the NUMERIC/string block,
 - `PY_SCALE` (Python interop) — proving CPython initializes inside the sandbox.
 
 ```bash
@@ -304,17 +307,18 @@ the same value to test in the current session only.
 ## 6. Create the script and run it
 
 The native client dispatches on the **SQL script name** (there is no
-`%udf_object`); the script body is ignored. The container ships two baked-in
-UDFs — `DOUBLE_MOJO` (SCALAR) and `SUM_POSITIVE` (SET). The scalar one is named
-`DOUBLE_MOJO` rather than `DOUBLE` because `DOUBLE` is a reserved Exasol type
-keyword.
+`%udf_object`); the script body is ignored. The container ships baked-in UDFs —
+`DOUBLE_MOJO_NATIVE` (SCALAR), `SUM_POSITIVE` (SET), `PY_SCALE` (Python interop),
+`MIRROR_MOJO` (EMITS). The scalar one carries the `_NATIVE` suffix to mark it as
+baked-in (vs the dynamically-loaded `.so` `DOUBLE_EXT`) and to avoid `DOUBLE`, a
+reserved Exasol type keyword.
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS MOJO_TEST;
 OPEN SCHEMA MOJO_TEST;
 
 -- SCALAR (map): out = 2 * val
-CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO(val BIGINT)
+CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO_NATIVE(val BIGINT)
 RETURNS BIGINT AS
 -- native client dispatches by script name; body ignored
 /
@@ -326,9 +330,9 @@ RETURNS BIGINT AS
 /
 ```
 ```sql
-SELECT DOUBLE_MOJO(21);     -- 42
-SELECT DOUBLE_MOJO(-5);     -- -10
-SELECT DOUBLE_MOJO(NULL);   -- NULL
+SELECT DOUBLE_MOJO_NATIVE(21);     -- 42
+SELECT DOUBLE_MOJO_NATIVE(-5);     -- -10
+SELECT DOUBLE_MOJO_NATIVE(NULL);   -- NULL
 
 SELECT SUM_POSITIVE(val) FROM (VALUES 10, 21, -5, 0, 7) t(val);   -- 38
 ```
@@ -342,7 +346,7 @@ conn = pyexasol.connect(dsn='127.0.0.1:8563', user='sys', password='exasol',
                         encryption=True,
                         websocket_sslopt={'cert_reqs': ssl.CERT_NONE})
 conn.execute('OPEN SCHEMA MOJO_TEST')
-print(conn.execute('SELECT DOUBLE_MOJO(21)').fetchall())
+print(conn.execute('SELECT DOUBLE_MOJO_NATIVE(21)').fetchall())
 conn.close()
 PY
 ```
@@ -421,9 +425,27 @@ Python packages it imports must be on `PYTHONPATH` (bundled, or uploaded too).
 [`DYNAMIC_UDF.md`](DYNAMIC_UDF.md).** See also [`src/loader.mojo`](src/loader.mojo)
 for the ABI and [`examples/udf_so/`](examples/udf_so/) for the template.
 
+### Baked-in vs dynamic `.so` — which to use
+
+Both run through the identical protocol; they differ only in how the UDF is
+invoked, which is a **fixed per-group overhead**, not per-workload:
+
+| | Baked-in (`run_udf`) | Dynamic `.so` (`%udf_object`) |
+|---|---|---|
+| Add/replace a UDF | rebuild + redeploy the container | upload a new `.so`, no rebuild |
+| Invocation | direct call on the decoded column | marshal column across the C ABI (copy in → `.so` allocates output → copy back), `dlopen` once per VM |
+| Overhead | none beyond the protocol | a constant per group (the copies + allocs) |
+| Best for | stable, latency-critical UDFs | fast iteration, per-team/per-project UDFs |
+
+That marshalling makes the `.so` path measurably slower **for a trivial UDF**
+(e.g. doubling can be ~2× the baked time, because the copies dominate when the
+"work" is a single multiply). For any non-trivial UDF the constant is a rounding
+error and the two converge — so pick baked-in for hot, stable, trivial UDFs and
+`.so` for everything you want to change without a rebuild.
+
 ## Diagnosing a live run
 
-If a live `SELECT DOUBLE_MOJO(21)` returns an empty set or `22002 VM crashed`, build
+If a live `SELECT DOUBLE_MOJO_NATIVE(21)` returns an empty set or `22002 VM crashed`, build
 the **diagnostic** entry point instead of the normal one. It runs the handshake +
 one input cycle and then reports exactly what Exasol sent — column types, row
 count, and which wire block the value landed in — as the SQL error message:
@@ -437,7 +459,7 @@ Deploy `diag-out/mojo-slc.tar.gz` in place of the normal one and run the query;
 it will fail with a line like:
 
 ```
-MOJO-DIAG script=DOUBLE_MOJO in_iter=1 single=0 in_types=[..] out_types=[..] | RUN->6 rows=1 i64=1 str=0 first_i64=21
+MOJO-DIAG script=DOUBLE_MOJO_NATIVE in_iter=1 single=0 in_types=[..] out_types=[..] | RUN->6 rows=1 i64=1 str=0 first_i64=21
 ```
 
 `in_types`/`out_types` are `column_type` enums (`3`=INT64, `4`=NUMERIC, `7`=STRING,
@@ -455,7 +477,7 @@ by hand.
 | Layer | What it proves | Files | How it runs |
 |-------|----------------|-------|-------------|
 | **Codec unit tests** | The pure protobuf/wire functions (varint, int reinterpret, packed repeated, length-prefix bounds, decimal parsing, block mapping) are correct in isolation. Analogue of the Rust SLC's per-module `*_tests.rs`. | [`test/mojo/test_codec.mojo`](test/mojo/test_codec.mojo) | `make unittest` |
-| **Protocol self-test** | The real `mojoudfclient` binary speaks the full ZMQ + protobuf `MT_*` exchange for every UDF/wire combination, incl. multi-batch accumulation. Covers all three UDF shapes: **SCALAR** (`DOUBLE_MOJO`, `PY_SCALE`), **SET** (`SUM_POSITIVE`), **EMITS** one-to-many (`MIRROR_MOJO`). | [`test/fake_exasol.py`](test/fake_exasol.py) | `make selftest` |
+| **Protocol self-test** | The real `mojoudfclient` binary speaks the full ZMQ + protobuf `MT_*` exchange for every UDF/wire combination, incl. multi-batch accumulation. Covers all three UDF shapes: **SCALAR** (`DOUBLE_MOJO_NATIVE`, `PY_SCALE`), **SET** (`SUM_POSITIVE`), **EMITS** one-to-many (`MIRROR_MOJO`). | [`test/fake_exasol.py`](test/fake_exasol.py) | `make selftest` |
 | **Datatype compatibility** | Every Exasol SQL column type is driven through the real binary and asserted to convert correctly or be refused with a precise `MT_CLOSE` — the contract of which SQL types map to a Mojo `Int64`. | [`test/fake_exasol.py`](test/fake_exasol.py) (`--coltype`) | `make selftest` |
 | **Tarball contract** | The shipped SLC rootfs satisfies the sandbox contract: client present/executable and arch-matched, DT_NEEDED closure resolvable, bundled CPython staged, skeleton mount points, size ceiling, metadata byte-identical. Ported from `dist/tests/slc_tarball_test.sh`. | [`test/slc_tarball_test.sh`](test/slc_tarball_test.sh) | `make tarball` |
 | **Language-definitions contract** | `build_info/language_definitions.json` conforms to the Exasol v2 metadata schema (aliases `MOJO`, `lang=mojo`, `localzmq+protobuf`, `/exaudf/mojoudfclient`, no legacy keys). One fixture per defect class proves each assertion discriminates. | [`test/language_definitions_test.sh`](test/language_definitions_test.sh), [`…_fixtures_test.sh`](test/language_definitions_fixtures_test.sh), [`fixtures/`](test/fixtures/language_definitions/) | `make contracts` |
@@ -466,7 +488,7 @@ by hand.
 The whole repo is the language container — everything is Mojo, no Rust.
 
 ```
-src/udf.mojo          ← the UDFs: DOUBLE_MOJO, SUM_POSITIVE, PY_SCALE + dispatch
+src/udf.mojo          ← the UDFs: DOUBLE_MOJO_NATIVE, SUM_POSITIVE, PY_SCALE + dispatch
 src/main.mojo         protocol host: argv → connect → handshake → run loop
 src/diag.mojo         diagnostic entry point (reports Exasol's wire encoding)
 src/wire.mojo         Exasol message encode/decode + exascript_table_data
@@ -493,7 +515,7 @@ examples/triple.mojo  worked example: adding a new native UDF
   returned an empty result; the likely cause — Exasol delivering `BIGINT` in the
   NUMERIC/string block — is now handled, but a live run has not yet been
   re-confirmed. Use the [diagnostic build](#diagnosing-a-live-run) if it recurs.
-- **The UDFs are hard-coded.** `src/udf.mojo` ships `DOUBLE_MOJO` (SCALAR),
+- **The UDFs are hard-coded.** `src/udf.mojo` ships `DOUBLE_MOJO_NATIVE` (SCALAR),
   `SUM_POSITIVE` (SET), and `PY_SCALE` (SCALAR via Python interop), all
   `BIGINT → BIGINT`. To change/add a UDF, edit the `run_udf` dispatch +
   implementation, rebuild the SLC, and redeploy.

@@ -10,16 +10,18 @@
 CREATE SCHEMA IF NOT EXISTS MOJO_TEST;
 OPEN SCHEMA MOJO_TEST;
 
--- SCALAR (map): DOUBLE_MOJO(val) -> 2 * val, NULL -> NULL.
--- Named DOUBLE_MOJO because DOUBLE is a reserved Exasol type keyword.
-CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO(val BIGINT)
+-- SCALAR (map): DOUBLE_MOJO_NATIVE(val) -> 2 * val, NULL -> NULL.
+-- Baked into mojoudfclient (the "_NATIVE" suffix marks it as compiled-in, vs the
+-- dynamically-loaded .so UDF DOUBLE_EXT below). Not named DOUBLE — that is a
+-- reserved Exasol type keyword.
+CREATE OR REPLACE MOJO SCALAR SCRIPT DOUBLE_MOJO_NATIVE(val BIGINT)
 RETURNS BIGINT AS
 -- native client dispatches by script name; body ignored
 /
 
-SELECT DOUBLE_MOJO(21);     -- 42
-SELECT DOUBLE_MOJO(-5);     -- -10
-SELECT DOUBLE_MOJO(NULL);   -- NULL
+SELECT DOUBLE_MOJO_NATIVE(21);     -- 42
+SELECT DOUBLE_MOJO_NATIVE(-5);     -- -10
+SELECT DOUBLE_MOJO_NATIVE(NULL);   -- NULL
 
 -- SET (reduce): SUM_POSITIVE sums the positive values in each group into one row.
 CREATE OR REPLACE MOJO SET SCRIPT SUM_POSITIVE(val BIGINT)
